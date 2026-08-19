@@ -90,35 +90,35 @@ h2 { font-size: 1.15rem; font-weight: 700; margin: 22px 0 10px; }
   margin-bottom: 14px;
 }
 
-.module-card {
-  display: block;
+/* Portada: héroes de módulo que llenan la pantalla (como el Referee Trainer) */
+.screen-fill.home { gap: 14px; }
+.home-head .subtitle { margin-bottom: 0; }
+.module-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0px; /* 0px, no 0%: con el contenedor en min-height el % cae a auto y las tarjetas salen desiguales */
   width: 100%;
-  text-align: left;
   border: 0;
   font: inherit;
-  color: inherit;
+  color: var(--text);
   background: var(--card);
-  border-radius: var(--radius);
-  padding: 20px 18px;
-  margin-bottom: 14px;
+  border-radius: 26px;
+  padding: 28px 16px;
 }
-.module-card:active { background: var(--card2); }
-.module-head { display: flex; align-items: center; gap: 14px; }
-.module-icon {
-  width: 52px; height: 52px; border-radius: 16px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-.module-icon svg {
-  width: 30px; height: 30px;
-  fill: none; stroke: #fff; stroke-width: 1.9;
+.module-hero:active { background: var(--card2); }
+.module-hero .mod-icon { line-height: 0; margin-bottom: 6px; color: #3a3a3c; }
+.module-hero .mod-icon svg {
+  display: block;
+  width: 52px; height: 52px;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
   stroke-linecap: round; stroke-linejoin: round;
 }
-.module-icon.kata { background: linear-gradient(135deg, #ff5f52, #d32f2f); }
-.module-icon.kumite { background: linear-gradient(135deg, #4da3ff, #0a62d0); }
-.module-title { font-size: 1.25rem; font-weight: 800; letter-spacing: -0.01em; }
-.module-sub { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
-.module-stats { display: flex; gap: 8px; margin-top: 14px; }
+.module-hero .mod-name { font-weight: 800; font-size: 1.3rem; letter-spacing: 0.1em; }
+.module-hero .mod-sub { font-size: 0.85rem; color: var(--muted); }
+.module-stats { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
 .chip {
   background: rgba(120, 120, 128, 0.12);
   border-radius: 999px;

@@ -147,45 +147,44 @@ function accuracy(mod) {
   return total ? Math.round((ok / total) * 100) : null;
 }
 
+/* Karatekas de línea del Referee Trainer: shiko-dachi (kata) y kizami-tsuki (kumite) */
 const MOD_ICONS = {
-  kata: '<svg viewBox="0 0 24 24"><circle cx="12" cy="4.6" r="1.9"/><path d="M12 6.5v5.2"/><path d="M12 8.3 5.5 9.6"/><path d="M12 8.3l6.5 1.3"/><path d="M12 11.7 8.2 16l-1 4.5"/><path d="M12 11.7l3.8 4.3 1 4.5"/></svg>',
-  kumite: '<svg viewBox="0 0 24 24"><circle cx="6.5" cy="5.4" r="1.7"/><path d="M6.5 7.1v4.6l-1.8 7.5"/><path d="M6.5 11.7l3 6.9"/><path d="M6.5 8.4 13 10"/><circle cx="18" cy="6.4" r="1.7"/><path d="M18 8.1c-.4 1.9-.6 3.4-2 4.4"/><path d="M18 11.5l1.5 7.6"/><path d="M16.7 13.4l-2.2 5.7"/></svg>',
+  kata: '<svg viewBox="0 0 24 24"><circle cx="12" cy="4.3" r="2.1"/><path d="M12 6.4v6"/><path d="M12 8.3 5.8 8.9M12 8.3l6.2.6"/><circle cx="4.7" cy="9" r="1.05" fill="currentColor" stroke="none"/><circle cx="19.3" cy="9" r="1.05" fill="currentColor" stroke="none"/><path d="M12 12.4 5.3 15.4l-.2 4.1M3.2 19.8H7"/><path d="M12 12.4l6.7 3 .2 4.1M17 19.8h3.8"/></svg>',
+  kumite: '<svg viewBox="0 0 24 24"><circle cx="6.6" cy="6.8" r="1.8"/><path d="M6.1 8.9 4.9 13.4"/><path d="M6.3 9.4l8.6-2.2"/><path d="M6.3 9.9 4 11.8"/><path d="M4.9 13.4l3.9 2.8-.3 4.2"/><path d="M4.9 13.4l-2.9 6"/><circle cx="19.1" cy="5.7" r="1.8"/><path d="M18.5 7.6l-1.1 5.5"/><path d="M18.2 8.3l-2.9 2.2"/><path d="M17.4 13.1l-1.7 6.3"/><path d="M17.4 13.1l3.9 5.6"/></svg>',
 };
 
 function renderHome() {
-  let html = `<div class="screen-fill">
-    <h1>Exam Trainer</h1>
-    <p class="subtitle">Preguntas oficiales WKF · Julio 2026</p>`;
+  let html = `<div class="screen-fill home">
+    <div class="home-head">
+      <h1>Exam Trainer</h1>
+      <p class="subtitle">Preguntas oficiales WKF · Julio 2026</p>
+    </div>`;
 
   for (const mod of ['kata', 'kumite']) {
     const bank = BANK[mod];
     const acc = accuracy(mod);
     const cur = S.current[mod];
     const nRev = S.review.filter(id => QBY[id] && QBY[id].m === mod).length;
-    html += `<button class="module-card" data-mod="${mod}">
-      <div class="module-head">
-        <div class="module-icon ${mod}">${MOD_ICONS[mod]}</div>
-        <div>
-          <div class="module-title">${MODULES[mod].label}</div>
-          <div class="module-sub">${bank.length} preguntas</div>
-        </div>
-      </div>
-      <div class="module-stats">
+    html += `<button class="module-hero" data-mod="${mod}">
+      <span class="mod-icon">${MOD_ICONS[mod]}</span>
+      <span class="mod-name">${MODULES[mod].label.toUpperCase()}</span>
+      <span class="mod-sub">${bank.length} preguntas</span>
+      <span class="module-stats">
         ${cur ? `<span class="chip progress">En curso · ${cur.answers.length}/${cur.qids.length}</span>` : ''}
         ${acc !== null ? `<span class="chip ${acc >= 80 ? 'good' : ''}">${acc}% acierto</span>` : ''}
         ${nRev ? `<span class="chip">${nRev} en repaso</span>` : ''}
-      </div>
+      </span>
     </button>`;
   }
 
   const nRevTotal = S.review.length;
   if (nRevTotal) {
-    html += `<button class="btn" data-act="go-review" style="margin-top:4px">Repaso · ${nRevTotal} pregunta${nRevTotal === 1 ? '' : 's'}</button>`;
+    html += `<button class="btn" data-act="go-review">Repaso · ${nRevTotal} pregunta${nRevTotal === 1 ? '' : 's'}</button>`;
   }
   html += '</div>';
   main.appendChild(h(html));
 
-  main.querySelectorAll('.module-card').forEach(el => {
+  main.querySelectorAll('.module-hero').forEach(el => {
     el.addEventListener('click', () => go('start', { mod: el.dataset.mod }));
   });
   const rv = main.querySelector('[data-act="go-review"]');
