@@ -1,11 +1,12 @@
 /* Service worker — offline total con actualización en segundo plano */
-const CACHE = 'exam-trainer-v7';
+const CACHE = 'exam-trainer-v8';
 const ASSETS = [
   './',
   'index.html',
   'styles.css',
   'app.js',
   'data.js',
+  'rules.js',
   'manifest.webmanifest',
   'icons/icon-180.png',
   'icons/icon-192.png',

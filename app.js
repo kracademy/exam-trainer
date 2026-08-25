@@ -106,6 +106,7 @@ let view = { screen: 'home' };
 
 function go(screen, params) {
   if (view.screen === 'car' && screen !== 'car' && car) carCleanup();
+  if (view.screen === 'reader' && screen !== 'reader' && reader) readerStop();
   view = Object.assign({ screen }, params || {});
   render();
   window.scrollTo(0, 0);
@@ -123,7 +124,7 @@ function setTab(name) {
 
 function render() {
   main.innerHTML = '';
-  const tabFor = { home: 'home', start: 'home', quiz: 'home', result: 'home', review: 'review', stats: 'stats', settings: 'settings' };
+  const tabFor = { home: 'home', start: 'home', quiz: 'home', car: 'home', result: 'home', review: 'review', rules: 'rules', rulebook: 'rules', reader: 'rules', stats: 'stats', settings: 'settings' };
   setTab(tabFor[view.screen] || 'home');
   ({
     home: renderHome,
@@ -132,6 +133,9 @@ function render() {
     car: renderCar,
     result: renderResult,
     review: renderReview,
+    rules: renderRules,
+    rulebook: renderRulebook,
+    reader: renderReader,
     stats: renderStats,
     settings: renderSettings,
   }[view.screen] || renderHome)();
@@ -817,6 +821,239 @@ function renderReview() {
   });
   const rr = main.querySelector('[data-act="resume-review"]');
   if (rr) rr.addEventListener('click', () => go('quiz', { key: 'review' }));
+}
+
+/* ---------- reglas (reglamentos con lectura en voz alta) ---------- */
+
+// Blindaje frente a versiones mixtas en caché durante una actualización del sw
+const BOOKS = typeof RULEBOOKS !== 'undefined' ? RULEBOOKS : [];
+const BOOK_BY = {};
+BOOKS.forEach(b => { BOOK_BY[b.id] = b; });
+
+let reader = null; // reproducción de reglamento en curso
+
+function renderRules() {
+  const last = S.rulesPos && BOOK_BY[S.rulesPos.book] ? S.rulesPos : null;
+  let html = `<div class="screen-fill">
+    <h1>Reglas</h1>
+    <p class="subtitle">Reglamentos 2026 · lectura en voz alta</p>`;
+
+  if (last) {
+    const b = BOOK_BY[last.book];
+    const sec = b.sections[last.si];
+    if (sec) {
+      html += `<button class="btn" data-act="continue" style="margin-bottom:18px;text-align:left">
+        <span style="display:block;font-size:0.75rem;color:var(--muted);font-weight:700;margin-bottom:3px">CONTINUAR</span>
+        ${esc(b.g)} ${esc(b.title)} · ${esc(sec.t.length > 44 ? sec.t.slice(0, 44) + '…' : sec.t)}
+      </button>`;
+    }
+  }
+
+  for (const group of ['WKF', 'RFEK']) {
+    html += `<h2>${group} <span style="font-weight:600;color:var(--muted);font-size:0.8rem">· ${group === 'WKF' ? 'inglés' : 'castellano'}</span></h2><div class="card list-card">`;
+    for (const b of BOOKS.filter(x => x.g === group)) {
+      html += `<button class="book-row" data-book="${b.id}">
+        <span class="book-title">${esc(b.title)}</span>
+        <span class="book-sub">${b.sections.length} secciones</span>
+        <span class="chev">›</span>
+      </button>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  main.appendChild(h(html));
+
+  main.querySelectorAll('.book-row').forEach(el => {
+    el.addEventListener('click', () => go('rulebook', { book: el.dataset.book }));
+  });
+  const c = main.querySelector('[data-act="continue"]');
+  if (c) c.addEventListener('click', () => go('reader', { book: last.book, si: last.si }));
+}
+
+function renderRulebook() {
+  const b = BOOK_BY[view.book];
+  if (!b) { go('rules'); return; }
+  let html = `<div class="screen-fill">
+    <h1>${esc(b.title)}</h1>
+    <p class="subtitle">${b.g} 2026 · ${b.lang === 'en' ? 'inglés' : 'castellano'}</p>
+    <div class="card list-card">`;
+  b.sections.forEach((s, i) => {
+    html += `<button class="book-row" data-si="${i}">
+      <span class="book-title sec">${esc(s.t)}</span>
+      <span class="book-sub">${Math.max(1, Math.round(s.x.length / 850))} min</span>
+      <span class="chev">›</span>
+    </button>`;
+  });
+  html += `</div>
+    <button class="btn btn-ghost" data-act="back">‹ Reglas</button>
+  </div>`;
+  main.appendChild(h(html));
+  main.querySelectorAll('.book-row').forEach(el => {
+    el.addEventListener('click', () => go('reader', { book: b.id, si: Number(el.dataset.si) }));
+  });
+  main.querySelector('[data-act="back"]').addEventListener('click', () => go('rules'));
+}
+
+/* --- motor de lectura --- */
+
+function chunksOf(text) {
+  // trocear en frases agrupadas (~260 caracteres) para que iOS no corte la voz
+  const out = [];
+  for (const para of text.split('\n')) {
+    const sentences = para.match(/[^.!?:]+[.!?:]+["»)]*\s*|[^.!?:]+$/g) || [para];
+    let buf = '';
+    for (const s of sentences) {
+      if (buf && buf.length + s.length > 260) { out.push(buf.trim()); buf = ''; }
+      buf += s;
+    }
+    if (buf.trim()) out.push(buf.trim());
+  }
+  return out.filter(c => c.length > 1);
+}
+
+function readerStart(bookId, si, fromChunk) {
+  const b = BOOK_BY[bookId];
+  const sec = b.sections[si];
+  if (reader) readerStop();
+  reader = { book: bookId, si, chunks: chunksOf(sec.x), ci: fromChunk || 0, playing: true };
+  S.rulesPos = { book: bookId, si };
+  save();
+  requestReaderWake();
+  speechSynthesis.cancel();
+  readerSpeakChunk();
+}
+
+async function requestReaderWake() {
+  try {
+    if (reader && navigator.wakeLock) reader.wake = await navigator.wakeLock.request('screen');
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (reader && reader.playing && document.visibilityState === 'visible') requestReaderWake();
+});
+
+function readerSpeakChunk() {
+  if (!reader || !reader.playing) return;
+  const b = BOOK_BY[reader.book];
+  if (reader.ci >= reader.chunks.length) { readerSectionDone(); return; }
+  const text = reader.chunks[reader.ci];
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = b.lang === 'en' ? 'en-GB' : 'es-ES';
+  u.rate = 1.05;
+  u.onend = () => {
+    if (!reader || !reader.playing) return;
+    reader.ci++;
+    readerHighlight();
+    readerSpeakChunk();
+  };
+  u.onerror = u.onend;
+  speechSynthesis.speak(u);
+  readerHighlight();
+}
+
+function readerSectionDone() {
+  // encadenar con la siguiente sección, estilo podcast
+  const b = BOOK_BY[reader.book];
+  const next = reader.si + 1;
+  if (next < b.sections.length) {
+    const title = b.sections[next].t;
+    const u = new SpeechSynthesisUtterance(title);
+    u.lang = b.lang === 'en' ? 'en-GB' : 'es-ES';
+    u.rate = 1.0;
+    u.onend = () => { if (reader && reader.playing) { go('reader', { book: reader.book, si: next, autoplay: true }); } };
+    u.onerror = u.onend;
+    setTimeout(() => { if (reader && reader.playing) speechSynthesis.speak(u); }, 700);
+  } else {
+    reader.playing = false;
+    readerHighlight();
+    renderIfReader();
+  }
+}
+
+function readerPause() {
+  if (!reader) return;
+  reader.playing = false;
+  speechSynthesis.cancel();
+  if (reader.wake) { try { reader.wake.release(); } catch (e) {} }
+  renderIfReader();
+}
+
+function readerResume() {
+  if (!reader) return;
+  reader.playing = true;
+  requestReaderWake();
+  speechSynthesis.cancel();
+  readerSpeakChunk();
+  renderIfReader();
+}
+
+function readerStop() {
+  if (!reader) return;
+  reader.playing = false;
+  try { speechSynthesis.cancel(); } catch (e) {}
+  if (reader.wake) { try { reader.wake.release(); } catch (e) {} }
+  reader = null;
+}
+
+function renderIfReader() {
+  if (view.screen === 'reader') render();
+}
+
+function readerHighlight() {
+  if (view.screen !== 'reader' || !reader) return;
+  const btn = main.querySelector('[data-act="play"]');
+  main.querySelectorAll('.chunk').forEach((el, i) => {
+    const on = reader.playing && i === reader.ci;
+    el.classList.toggle('now', on);
+    if (on) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
+  if (btn) btn.textContent = reader.playing ? 'Pausa' : (reader.ci >= reader.chunks.length ? 'Volver a escuchar' : 'Reanudar');
+}
+
+function renderReader() {
+  const b = BOOK_BY[view.book];
+  if (!b) { go('rules'); return; }
+  const si = view.si || 0;
+  const sec = b.sections[si];
+  const active = reader && reader.book === b.id && reader.si === si;
+  const chunks = active ? reader.chunks : chunksOf(sec.x);
+
+  let html = `<div class="screen-fill">
+    <div class="quiz-top">
+      <span class="quiz-meta">${esc(b.g)} ${esc(b.title)} · ${si + 1} de ${b.sections.length}</span>
+    </div>
+    <h1 class="reader-title">${esc(sec.t)}</h1>
+    <div class="reader-text">
+      ${chunks.map((c, i) => `<span class="chunk${active && reader.playing && i === reader.ci ? ' now' : ''}">${esc(c)}</span>`).join(' ')}
+    </div>
+    <div class="reader-controls">
+      <button class="btn reader-nav" data-act="prev" ${si === 0 ? 'disabled' : ''}>‹</button>
+      <button class="btn btn-primary" data-act="play">${active && reader.playing ? 'Pausa' : (active && reader.ci > 0 && reader.ci < reader.chunks.length ? 'Reanudar' : 'Escuchar')}</button>
+      <button class="btn reader-nav" data-act="next" ${si >= b.sections.length - 1 ? 'disabled' : ''}>›</button>
+    </div>
+    <button class="btn btn-ghost" data-act="back">‹ ${esc(b.title)}</button>
+  </div>`;
+  main.appendChild(h(html));
+
+  main.querySelector('[data-act="play"]').addEventListener('click', () => {
+    const act = reader && reader.book === b.id && reader.si === si;
+    if (act && reader.playing) readerPause();
+    else if (act && !reader.playing && reader.ci < reader.chunks.length) readerResume();
+    else readerStart(b.id, si, 0);
+  });
+  main.querySelector('[data-act="prev"]').addEventListener('click', () => {
+    const keep = !!(reader && reader.playing) || !!view.autoplay;
+    go('reader', { book: b.id, si: si - 1, autoplay: keep });
+  });
+  main.querySelector('[data-act="next"]').addEventListener('click', () => {
+    const keep = !!(reader && reader.playing) || !!view.autoplay;
+    go('reader', { book: b.id, si: si + 1, autoplay: keep });
+  });
+  main.querySelector('[data-act="back"]').addEventListener('click', () => go('rulebook', { book: b.id }));
+
+  if (view.autoplay && (!reader || reader.book !== b.id || reader.si !== si)) {
+    readerStart(b.id, si, 0);
+  }
 }
 
 /* ---------- stats ---------- */
