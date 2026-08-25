@@ -1,5 +1,5 @@
 /* Service worker — offline total con actualización en segundo plano */
-const CACHE = 'exam-trainer-v8';
+const CACHE = 'exam-trainer-v9';
 const ASSETS = [
   './',
   'index.html',

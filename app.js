@@ -392,11 +392,53 @@ const CAR_ICON = '<svg class="inline-ico" viewBox="0 0 24 24"><path d="M5 12 6.5
 
 const SRClass = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
+/* Utilidades TTS robustas para iOS:
+   - TTS_KEEP evita que Safari recolecte la utterance a media frase (bug conocido: se queda muda).
+   - resume() tras speak(): iOS a veces arranca el motor en pausa después de un cancel().
+   - ttsUnlock() se llama dentro del gesto del usuario para desbloquear el audio. */
+const TTS_KEEP = new Set();
+
+function ttsUnlock() {
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+function ttsSpeak(text, lang, rate, cb) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang;
+  u.rate = rate;
+  let done = false;
+  const fin = () => { if (!done) { done = true; TTS_KEEP.delete(u); if (cb) cb(); } };
+  u.onstart = () => { u._started = true; };
+  u.onend = fin;
+  u.onerror = fin;
+  TTS_KEEP.add(u);
+  speechSynthesis.speak(u);
+  try { speechSynthesis.resume(); } catch (e) {}
+  return u;
+}
+
+// aviso si el motor no arranca (típico: iPhone en modo silencio o volumen a cero)
+let ttsWatchdogShown = false;
+function ttsWatchdog(u) {
+  if (ttsWatchdogShown) return;
+  setTimeout(() => {
+    if (!u._started && !speechSynthesis.speaking && !ttsWatchdogShown) {
+      ttsWatchdogShown = true;
+      toast('¿No se oye? Quita el modo silencio del iPhone y sube el volumen');
+    }
+  }, 2500);
+}
+
 let car = null; // sesión de voz activa
 
 function startCar(key) {
   if (!('speechSynthesis' in window)) { toast('Este navegador no puede leer en voz alta'); return; }
-  car = { key, phase: 'speaking', timers: [], rec: null, lastQid: null, podcast: !SRClass, pIdx: null };
+  ttsUnlock(); // dentro del gesto del usuario: desbloquea el audio en iOS
+  car = { key, phase: 'speaking', timers: [], rec: null, lastQid: null, podcast: !SRClass, pIdx: null, first: true };
   if (car.podcast) {
     const at = S.current[key];
     car.pIdx = at ? at.answers.length : 0;
@@ -422,16 +464,12 @@ function carTimer(fn, ms) {
 
 function speak(text, cb) {
   const lang = S.settings.voice;
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang === 'en' ? 'en-GB' : 'es-ES';
-  u.rate = 1.05;
   let done = false;
   const fin = () => { if (!done) { done = true; if (cb) cb(); } };
-  u.onend = fin;
-  u.onerror = fin;
-  speechSynthesis.speak(u);
+  const u = ttsSpeak(text, lang === 'en' ? 'en-GB' : 'es-ES', 1.05, fin);
   // iOS a veces se traga onend: temporizador de seguridad proporcional al texto
   if (cb) carTimer(fin, Math.max(4000, text.length * 110) + 1500);
+  return u;
 }
 
 function carIdx() {
@@ -449,19 +487,24 @@ function carNext() {
   car.q = QBY[at.qids[idx]];
   car.phase = 'speaking';
   renderIfCar();
-  speechSynthesis.cancel();
+  if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
   const q = car.q;
   const text = S.settings.voice === 'en' ? q.en : (q.es || q.en);
-  speak(text, () => {
-    if (!car) return;
-    if (car.podcast) {
-      car.phase = 'wait';
-      renderIfCar();
-      carTimer(() => carRevealPodcast(), 4000);
-    } else {
-      carListen();
-    }
-  });
+  // pequeño respiro tras cancel(): en iOS, cancel+speak en el mismo tick deja el motor mudo
+  carTimer(() => {
+    if (!car || car.q !== q) return;
+    const u = speak(text, () => {
+      if (!car) return;
+      if (car.podcast) {
+        car.phase = 'wait';
+        renderIfCar();
+        carTimer(() => carRevealPodcast(), 4000);
+      } else {
+        carListen();
+      }
+    });
+    if (car.first) { car.first = false; ttsWatchdog(u); }
+  }, 120);
 }
 
 function carRevealPodcast() {
@@ -915,12 +958,14 @@ function readerStart(bookId, si, fromChunk) {
   const b = BOOK_BY[bookId];
   const sec = b.sections[si];
   if (reader) readerStop();
-  reader = { book: bookId, si, chunks: chunksOf(sec.x), ci: fromChunk || 0, playing: true };
+  else if (speechSynthesis.speaking || speechSynthesis.pending) { try { speechSynthesis.cancel(); } catch (e) {} }
+  ttsUnlock(); // dentro del gesto: desbloquea el audio en iOS y re-arma el motor tras un cancel()
+  reader = { book: bookId, si, chunks: chunksOf(sec.x), ci: fromChunk || 0, playing: true, first: true };
   S.rulesPos = { book: bookId, si };
   save();
   requestReaderWake();
-  speechSynthesis.cancel();
-  readerSpeakChunk();
+  // respiro tras cancel(): en iOS, cancel+speak en el mismo tick deja el motor mudo
+  setTimeout(() => { if (reader && reader.playing) readerSpeakChunk(); }, 150);
 }
 
 async function requestReaderWake() {
@@ -937,17 +982,13 @@ function readerSpeakChunk() {
   const b = BOOK_BY[reader.book];
   if (reader.ci >= reader.chunks.length) { readerSectionDone(); return; }
   const text = reader.chunks[reader.ci];
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = b.lang === 'en' ? 'en-GB' : 'es-ES';
-  u.rate = 1.05;
-  u.onend = () => {
+  const u = ttsSpeak(text, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.05, () => {
     if (!reader || !reader.playing) return;
     reader.ci++;
     readerHighlight();
     readerSpeakChunk();
-  };
-  u.onerror = u.onend;
-  speechSynthesis.speak(u);
+  });
+  if (reader.first) { reader.first = false; ttsWatchdog(u); }
   readerHighlight();
 }
 
@@ -957,12 +998,12 @@ function readerSectionDone() {
   const next = reader.si + 1;
   if (next < b.sections.length) {
     const title = b.sections[next].t;
-    const u = new SpeechSynthesisUtterance(title);
-    u.lang = b.lang === 'en' ? 'en-GB' : 'es-ES';
-    u.rate = 1.0;
-    u.onend = () => { if (reader && reader.playing) { go('reader', { book: reader.book, si: next, autoplay: true }); } };
-    u.onerror = u.onend;
-    setTimeout(() => { if (reader && reader.playing) speechSynthesis.speak(u); }, 700);
+    setTimeout(() => {
+      if (!reader || !reader.playing) return;
+      ttsSpeak(title, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.0, () => {
+        if (reader && reader.playing) go('reader', { book: reader.book, si: next, autoplay: true });
+      });
+    }, 700);
   } else {
     reader.playing = false;
     readerHighlight();
@@ -982,8 +1023,8 @@ function readerResume() {
   if (!reader) return;
   reader.playing = true;
   requestReaderWake();
-  speechSynthesis.cancel();
-  readerSpeakChunk();
+  ttsUnlock();
+  setTimeout(() => { if (reader && reader.playing) readerSpeakChunk(); }, 120);
   renderIfReader();
 }
 
@@ -1199,5 +1240,11 @@ function renderSettings() {
 }
 
 /* ---------- arranque ---------- */
+
+// precargar las voces del sistema (iOS las carga en diferido)
+if ('speechSynthesis' in window) {
+  speechSynthesis.getVoices();
+  speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+}
 
 render();
