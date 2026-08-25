@@ -19,7 +19,7 @@ const BANK = {
 
 function defaultState() {
   return {
-    settings: { lang: 'both' }, // both | en | es
+    settings: { lang: 'both', voice: 'es' }, // lang: both|en|es · voice (modo coche): en|es
     review: [],                 // ids marcadas para repaso
     attempts: [],               // historial de intentos terminados
     current: {},                // intento en curso por clave (kata/kumite/review)
@@ -34,7 +34,7 @@ function loadState() {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       const s = Object.assign(defaultState(), JSON.parse(raw));
-      s.settings = Object.assign({ lang: 'both' }, s.settings);
+      s.settings = Object.assign({ lang: 'both', voice: 'es' }, s.settings);
       return s;
     }
   } catch (e) { /* estado corrupto: empezar de cero */ }
@@ -105,6 +105,7 @@ const CROSS = '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 let view = { screen: 'home' };
 
 function go(screen, params) {
+  if (view.screen === 'car' && screen !== 'car' && car) carCleanup();
   view = Object.assign({ screen }, params || {});
   render();
   window.scrollTo(0, 0);
@@ -128,6 +129,7 @@ function render() {
     home: renderHome,
     start: renderStart,
     quiz: renderQuiz,
+    car: renderCar,
     result: renderResult,
     review: renderReview,
     stats: renderStats,
@@ -212,6 +214,7 @@ function renderStart() {
         <span style="color:var(--red-dark);font-weight:700">${cur.answers.filter(a => !a.ok).length} mal</span>
       </div>
       <button class="btn btn-primary" data-act="resume">Continuar intento</button>
+      <button class="btn" data-act="resume-car">${CAR_ICON} Continuar en modo coche</button>
       <button class="btn btn-ghost" data-act="discard">Descartar y empezar de nuevo</button>
     </div>`;
   }
@@ -224,6 +227,7 @@ function renderStart() {
     </div>
     <div style="flex:1"></div>
     <button class="btn btn-primary" data-act="begin">Comenzar</button>
+    <button class="btn" data-act="begin-car">${CAR_ICON} Modo coche (voz)</button>
     <button class="btn btn-ghost" data-act="back">‹ Inicio</button>
   </div>`;
 
@@ -240,9 +244,18 @@ function renderStart() {
     if (S.current[mod] && !confirm('Tienes un intento en curso. ¿Descartarlo y empezar uno nuevo?')) return;
     startAttempt(mod, shuffle(bank.map(q => q.id)).slice(0, selLen));
   });
+  main.querySelector('[data-act="begin-car"]').addEventListener('click', () => {
+    if (!S.current[mod]) {
+      S.current[mod] = { key: mod, label: MODULES[mod].label, qids: shuffle(bank.map(q => q.id)).slice(0, selLen), answers: [], started: Date.now() };
+      save();
+    }
+    startCar(mod);
+  });
   main.querySelector('[data-act="back"]').addEventListener('click', () => go('home'));
   const res = main.querySelector('[data-act="resume"]');
   if (res) res.addEventListener('click', () => go('quiz', { key: mod }));
+  const resCar = main.querySelector('[data-act="resume-car"]');
+  if (resCar) resCar.addEventListener('click', () => startCar(mod));
   const dis = main.querySelector('[data-act="discard"]');
   if (dis) dis.addEventListener('click', () => {
     if (!confirm('¿Descartar el intento en curso? No contará en las estadísticas.')) return;
@@ -367,6 +380,314 @@ function finishAttempt(key) {
   delete S.current[key];
   save();
   go('result', { rec });
+}
+
+/* ---------- modo coche (voz) ---------- */
+
+const CAR_ICON = '<svg class="inline-ico" viewBox="0 0 24 24"><path d="M5 12 6.5 7.2A1.8 1.8 0 0 1 8.2 6h7.6a1.8 1.8 0 0 1 1.7 1.2L19 12"/><path d="M4.5 12h15a1.5 1.5 0 0 1 1.5 1.5V17h-2.5M3 17V13.5A1.5 1.5 0 0 1 4.5 12M8.5 17h7"/><circle cx="6.7" cy="17" r="1.8"/><circle cx="17.3" cy="17" r="1.8"/></svg>';
+
+const SRClass = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+
+let car = null; // sesión de voz activa
+
+function startCar(key) {
+  if (!('speechSynthesis' in window)) { toast('Este navegador no puede leer en voz alta'); return; }
+  car = { key, phase: 'speaking', timers: [], rec: null, lastQid: null, podcast: !SRClass, pIdx: null };
+  if (car.podcast) {
+    const at = S.current[key];
+    car.pIdx = at ? at.answers.length : 0;
+  }
+  requestWake();
+  go('car', { key });
+  carNext();
+}
+
+async function requestWake() {
+  try {
+    if (car && navigator.wakeLock) car.wake = await navigator.wakeLock.request('screen');
+  } catch (e) { /* sin wake lock: la pantalla puede apagarse */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (car && document.visibilityState === 'visible') requestWake();
+});
+
+function carTimer(fn, ms) {
+  if (!car) return;
+  car.timers.push(setTimeout(() => { if (car) fn(); }, ms));
+}
+
+function speak(text, cb) {
+  const lang = S.settings.voice;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang === 'en' ? 'en-GB' : 'es-ES';
+  u.rate = 1.05;
+  let done = false;
+  const fin = () => { if (!done) { done = true; if (cb) cb(); } };
+  u.onend = fin;
+  u.onerror = fin;
+  speechSynthesis.speak(u);
+  // iOS a veces se traga onend: temporizador de seguridad proporcional al texto
+  if (cb) carTimer(fin, Math.max(4000, text.length * 110) + 1500);
+}
+
+function carIdx() {
+  const at = S.current[car.key];
+  if (!at) return null;
+  const idx = car.podcast ? car.pIdx : at.answers.length;
+  return idx < at.qids.length ? idx : null;
+}
+
+function carNext() {
+  if (!car) return;
+  const at = S.current[car.key];
+  const idx = at ? carIdx() : null;
+  if (idx === null) { carFinish(); return; }
+  car.q = QBY[at.qids[idx]];
+  car.phase = 'speaking';
+  renderIfCar();
+  speechSynthesis.cancel();
+  const q = car.q;
+  const text = S.settings.voice === 'en' ? q.en : (q.es || q.en);
+  speak(text, () => {
+    if (!car) return;
+    if (car.podcast) {
+      car.phase = 'wait';
+      renderIfCar();
+      carTimer(() => carRevealPodcast(), 4000);
+    } else {
+      carListen();
+    }
+  });
+}
+
+function carRevealPodcast() {
+  if (!car) return;
+  const q = car.q;
+  car.phase = q.a ? 'ok' : 'ko'; // solo para el color del estado
+  renderIfCar();
+  const lang = S.settings.voice;
+  speak(q.a ? (lang === 'en' ? 'True' : 'Verdadero') : (lang === 'en' ? 'False' : 'Falso'), () => {
+    if (!car) return;
+    car.pIdx++;
+    carTimer(() => carNext(), 900);
+  });
+}
+
+function parseVoice(t) {
+  t = ' ' + t.toLowerCase() + ' ';
+  if (/verdadero|verdad|cierto| true | tru | sí | si /.test(t)) return { type: 'answer', val: true };
+  if (/falso| false | fols |mentira/.test(t)) return { type: 'answer', val: false };
+  if (/repaso|marcar|márcala/.test(t)) return { type: 'review' };
+  if (/repetir|repite|otra vez/.test(t)) return { type: 'repeat' };
+  if (/salir|terminar|acabar/.test(t)) return { type: 'exit' };
+  return null;
+}
+
+function carListen() {
+  if (!car) return;
+  car.phase = 'listening';
+  renderIfCar();
+  let rec;
+  try { rec = new SRClass(); } catch (e) { carToPodcast(); return; }
+  car.rec = rec;
+  rec.lang = 'es-ES';
+  rec.interimResults = true;
+  rec.maxAlternatives = 3;
+  let handled = false;
+  rec.onresult = (e) => {
+    if (handled || !car) return;
+    let txt = '';
+    for (const res of e.results) txt += ' ' + res[0].transcript;
+    const cmd = parseVoice(txt);
+    if (cmd) {
+      handled = true;
+      try { rec.abort(); } catch (err) {}
+      carCommand(cmd);
+    }
+  };
+  rec.onerror = (e) => {
+    if (handled || !car) return;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
+      handled = true;
+      carToPodcast();
+    }
+    // 'no-speech' y demás: onend relanza la escucha
+  };
+  rec.onend = () => {
+    if (!car || handled || car.phase !== 'listening') return;
+    carTimer(() => { if (car && car.phase === 'listening') carListen(); }, 300);
+  };
+  try { rec.start(); } catch (e) { carToPodcast(); }
+}
+
+function carToPodcast() {
+  if (!car) return;
+  toast('Micrófono no disponible: modo escucha');
+  car.podcast = true;
+  const at = S.current[car.key];
+  car.pIdx = at ? at.answers.length : 0;
+  car.phase = 'wait';
+  renderIfCar();
+  carTimer(() => carRevealPodcast(), 2500);
+}
+
+function carCommand(cmd) {
+  if (!car) return;
+  if (cmd.type === 'exit') { carExitSpoken(); return; }
+  if (cmd.type === 'repeat') { carNext(); return; }
+  if (cmd.type === 'review') {
+    const target = car.lastQid || (car.q && car.q.id);
+    if (target && !S.review.includes(target)) { S.review.push(target); save(); }
+    renderIfCar();
+    speak(S.settings.voice === 'en' ? 'Added to review' : 'Añadida a repaso', () => { if (car) carListen(); });
+    return;
+  }
+  if (cmd.type === 'answer') carAnswer(cmd.val);
+}
+
+function carAnswer(sel) {
+  if (!car) return;
+  const at = S.current[car.key];
+  const idx = at ? carIdx() : null;
+  if (idx === null) { carFinish(); return; }
+  const q = QBY[at.qids[idx]];
+  const ok = sel === q.a;
+  at.answers.push({ id: q.id, sel, ok });
+  const st = S.qstats[q.id] || [0, 0];
+  st[ok ? 0 : 1]++;
+  S.qstats[q.id] = st;
+  save();
+  car.lastQid = q.id;
+  car.phase = ok ? 'ok' : 'ko';
+  renderIfCar();
+  const lang = S.settings.voice;
+  const valTxt = v => (lang === 'en' ? (v ? 'true' : 'false') : (v ? 'verdadero' : 'falso'));
+  const fb = ok
+    ? (lang === 'en' ? 'Correct' : 'Correcto')
+    : (lang === 'en' ? `Wrong. It was ${valTxt(q.a)}` : `Incorrecto. Era ${valTxt(q.a)}`);
+  speak(fb, () => { if (car) carTimer(() => carNext(), 400); });
+}
+
+function carExitSpoken() {
+  const lang = S.settings.voice;
+  const key = car.key;
+  const at = S.current[key];
+  let msg = lang === 'en' ? 'Okay, stopping.' : 'Vale, lo dejamos aquí.';
+  if (at && at.answers.length) {
+    const nOk = at.answers.filter(a => a.ok).length;
+    msg += lang === 'en' ? ` ${nOk} of ${at.answers.length} correct so far.` : ` Llevas ${nOk} de ${at.answers.length} bien.`;
+  }
+  if (car.rec) { try { car.rec.onend = null; car.rec.abort(); } catch (e) {} }
+  car.rec = null;
+  speak(msg, null);
+  carTimer(() => carExit(), 4000);
+  car.phase = 'bye';
+  renderIfCar();
+}
+
+function carFinish() {
+  if (!car) return;
+  const key = car.key;
+  const at = S.current[key];
+  const lang = S.settings.voice;
+  const podcast = car.podcast;
+  carCleanup();
+  if (at && !podcast) {
+    const nOk = at.answers.filter(a => a.ok).length;
+    speak(lang === 'en' ? `Finished. ${nOk} out of ${at.qids.length} correct.` : `Terminado. ${nOk} de ${at.qids.length} correctas.`, null);
+    finishAttempt(key);
+  } else {
+    if (podcast) speak(lang === 'en' ? 'End of questions.' : 'Fin de las preguntas.', null);
+    go('start', { mod: key === 'review' ? 'kata' : key });
+  }
+}
+
+function carExit() {
+  const key = car ? car.key : null;
+  carCleanup();
+  if (key === 'review') go('review');
+  else if (key) go('start', { mod: key });
+  else go('home');
+}
+
+function carCleanup() {
+  if (!car) return;
+  car.timers.forEach(clearTimeout);
+  if (car.rec) { try { car.rec.onend = null; car.rec.onresult = null; car.rec.abort(); } catch (e) {} }
+  try { speechSynthesis.cancel(); } catch (e) {}
+  if (car.wake) { try { car.wake.release(); } catch (e) {} }
+  car = null;
+}
+
+function renderIfCar() {
+  if (view.screen === 'car') render();
+}
+
+const CAR_STATUS = {
+  speaking: { cls: 'speaking', label: 'Leyendo la pregunta…', ico: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4Z"/><path d="M16 9a4.2 4.2 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg>' },
+  listening: { cls: 'listening', label: '¿Verdadero o falso?', ico: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3"/></svg>' },
+  wait: { cls: 'speaking', label: 'Piensa la respuesta…', ico: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>' },
+  ok: { cls: 'ok', label: 'Correcto', ico: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>' },
+  ko: { cls: 'ko', label: 'Incorrecto', ico: '<svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>' },
+  bye: { cls: 'speaking', label: 'Hasta luego', ico: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4Z"/><path d="M16 9a4.2 4.2 0 0 1 0 6"/></svg>' },
+};
+
+function renderCar() {
+  if (!car) { go('home'); return; }
+  const at = S.current[car.key];
+  const idx = at ? (car.podcast ? car.pIdx : at.answers.length) : 0;
+  const total = at ? at.qids.length : 0;
+  const nOk = at ? at.answers.filter(a => a.ok).length : 0;
+  const nKo = at ? at.answers.length - nOk : 0;
+  const q = car.q;
+  const st = CAR_STATUS[car.phase === 'ko' && car.podcast ? 'ko' : car.phase] || CAR_STATUS.speaking;
+  const stLabel = car.podcast && (car.phase === 'ok' || car.phase === 'ko') ? (q && q.a ? 'Verdadero' : 'Falso') : st.label;
+  const lang = S.settings.voice;
+
+  const html = `<div class="screen-fill car">
+    <div class="quiz-top">
+      <span class="quiz-meta">${at ? esc(at.label) : ''} · ${Math.min(idx + 1, total)} de ${total}</span>
+      ${car.podcast ? '<span class="chip">modo escucha</span>' : `<span class="quiz-score"><span class="ok">✓ ${nOk}</span><span class="ko">✕ ${nKo}</span></span>`}
+    </div>
+    <div class="progress-track"><div class="progress-fill" style="width:${total ? (idx / total) * 100 : 0}%"></div></div>
+
+    <div class="car-status ${st.cls}">
+      <div class="car-circle">${st.ico}</div>
+      <div class="car-label">${stLabel}</div>
+    </div>
+
+    <div class="car-q">${q ? esc(lang === 'en' ? q.en : (q.es || q.en)) : ''}</div>
+
+    <div class="seg car-lang">
+      <button data-voice="es" class="${lang === 'es' ? 'sel' : ''}">Voz: Español</button>
+      <button data-voice="en" class="${lang === 'en' ? 'sel' : ''}">Voice: English</button>
+    </div>
+
+    ${car.podcast ? '' : `<p class="car-hint">Di <b>«verdadero»</b> o <b>«falso»</b> · «repaso» marca la última respondida · «repetir» · «salir»</p>
+    <div class="row car-btns">
+      <button class="btn car-true" data-val="true">TRUE</button>
+      <button class="btn car-false" data-val="false">FALSE</button>
+    </div>`}
+    <button class="btn btn-ghost" data-act="exit">Salir del modo coche</button>
+  </div>`;
+  main.appendChild(h(html));
+
+  main.querySelectorAll('[data-voice]').forEach(el => {
+    el.addEventListener('click', () => {
+      S.settings.voice = el.dataset.voice;
+      save();
+      render();
+    });
+  });
+  main.querySelectorAll('.car-btns .btn').forEach(el => {
+    el.addEventListener('click', () => {
+      if (!car || (car.phase !== 'listening' && car.phase !== 'speaking')) return;
+      if (car.rec) { try { car.rec.onend = null; car.rec.abort(); } catch (e) {} }
+      speechSynthesis.cancel();
+      carAnswer(el.dataset.val === 'true');
+    });
+  });
+  main.querySelector('[data-act="exit"]').addEventListener('click', () => carExit());
 }
 
 /* ---------- resultado ---------- */
@@ -556,6 +877,14 @@ function renderSettings() {
       <button data-lang="es" class="${lang === 'es' ? 'sel' : ''}">Español</button>
     </div>
 
+    <div class="set-label">VOZ DEL MODO COCHE</div>
+    <div class="seg">
+      <button data-voice="es" class="${S.settings.voice === 'es' ? 'sel' : ''}">Español</button>
+      <button data-voice="en" class="${S.settings.voice === 'en' ? 'sel' : ''}">English</button>
+    </div>
+    <p class="note">El modo coche lee las preguntas en voz alta y escucha tu respuesta («verdadero» / «falso»).
+    Leer funciona sin conexión; escuchar necesita internet (datos móviles).</p>
+
     <div class="set-label">COPIA DE SEGURIDAD</div>
     <button class="btn" data-act="export">Copiar copia de seguridad</button>
     <button class="btn" data-act="import">Importar copia de seguridad</button>
@@ -577,6 +906,14 @@ function renderSettings() {
   main.querySelectorAll('[data-lang]').forEach(el => {
     el.addEventListener('click', () => {
       S.settings.lang = el.dataset.lang;
+      save();
+      render();
+    });
+  });
+
+  main.querySelectorAll('[data-voice]').forEach(el => {
+    el.addEventListener('click', () => {
+      S.settings.voice = el.dataset.voice;
       save();
       render();
     });

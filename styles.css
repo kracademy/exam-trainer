@@ -344,6 +344,59 @@ textarea.backup {
 }
 .note { font-size: 0.78rem; color: var(--muted); line-height: 1.45; margin-top: 8px; }
 
+/* ---------- modo coche ---------- */
+.inline-ico {
+  width: 19px; height: 19px;
+  vertical-align: -4px; margin-right: 6px;
+  fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.car-status { text-align: center; padding: 26px 0 18px; }
+.car-circle {
+  width: 118px; height: 118px; margin: 0 auto 14px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--card);
+  color: var(--text);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.car-circle svg {
+  width: 52px; height: 52px;
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.car-status.listening .car-circle {
+  background: #e5f1ff; color: var(--blue);
+  animation: car-pulse 1.6s ease-in-out infinite;
+}
+.car-status.ok .car-circle { background: var(--green-bg); color: var(--green-dark); }
+.car-status.ko .car-circle { background: var(--red-bg); color: var(--red-dark); }
+.car-label { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.01em; }
+.car-status.ok .car-label { color: var(--green-dark); }
+.car-status.ko .car-label { color: var(--red-dark); }
+@keyframes car-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.30); }
+  50% { box-shadow: 0 0 0 16px rgba(0, 122, 255, 0); }
+}
+.car-q {
+  flex: 1;
+  font-size: 1.02rem; line-height: 1.45; font-weight: 500;
+  color: #515154;
+  padding: 4px 2px 16px;
+  overflow-y: auto;
+}
+.car-lang { margin-bottom: 10px; }
+.car-hint {
+  font-size: 0.78rem; color: var(--muted); text-align: center;
+  line-height: 1.5; margin-bottom: 12px;
+}
+.row { display: flex; }
+.car-btns { gap: 10px; margin-bottom: 10px; }
+.car-btns .btn + .btn { margin-top: 0; }
+.car-btns .btn { padding: 20px; font-size: 1.1rem; }
+.car-btns .car-true { background: var(--green-bg); color: var(--green-dark); }
+.car-btns .car-false { background: var(--red-bg); color: var(--red-dark); }
+
 .toast {
   position: fixed;
   left: 50%; transform: translateX(-50%);
