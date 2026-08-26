@@ -19,7 +19,7 @@ const BANK = {
 
 function defaultState() {
   return {
-    settings: { lang: 'both', voice: 'es' }, // lang: both|en|es · voice (modo coche): en|es
+    settings: { lang: 'both', voice: 'es', voiceSel: { es: '', en: '' } }, // lang: both|en|es · voice (modo coche): en|es · voiceSel: voz TTS elegida
     review: [],                 // ids marcadas para repaso
     attempts: [],               // historial de intentos terminados
     current: {},                // intento en curso por clave (kata/kumite/review)
@@ -35,6 +35,7 @@ function loadState() {
     if (raw) {
       const s = Object.assign(defaultState(), JSON.parse(raw));
       s.settings = Object.assign({ lang: 'both', voice: 'es' }, s.settings);
+      s.settings.voiceSel = Object.assign({ es: '', en: '' }, s.settings.voiceSel);
       return s;
     }
   } catch (e) { /* estado corrupto: empezar de cero */ }
@@ -187,7 +188,7 @@ function renderHome() {
   if (nRevTotal) {
     html += `<button class="btn" data-act="go-review">Repaso · ${nRevTotal} pregunta${nRevTotal === 1 ? '' : 's'}</button>`;
   }
-  html += '</div>';
+  html += '<p class="home-copy">© 2026 Oriol Aragon</p></div>';
   main.appendChild(h(html));
 
   main.querySelectorAll('.module-hero').forEach(el => {
@@ -406,27 +407,33 @@ function ttsUnlock() {
   } catch (e) {}
 }
 
-/* Elegir la mejor voz instalada: en iOS las "Enhanced/Premium/Siri" suenan
-   mucho más naturales que la compacta por defecto */
-let VOICE_CACHE = {};
-function pickVoice(lang) {
-  const list = speechSynthesis.getVoices();
-  if (!list.length) return null;
-  if (VOICE_CACHE[lang] !== undefined) return VOICE_CACHE[lang];
-  const pref = lang.startsWith('en') ? ['en-gb', 'en-us', 'en'] : ['es-es', 'es-mx', 'es'];
-  const cand = list.filter(v => {
+/* Voz TTS: primero la elegida por el usuario en Ajustes; si no, la mejor instalada
+   (en iOS las "Enhanced/Premium/Siri" suenan mucho más naturales que la compacta) */
+function voicesFor(key) {
+  const pref = key === 'en' ? ['en-gb', 'en-us', 'en'] : ['es-es', 'es-mx', 'es'];
+  return speechSynthesis.getVoices().filter(v => {
     const vl = v.lang.replace('_', '-').toLowerCase();
     return pref.some(p => vl.startsWith(p));
   });
+}
+
+function pickVoice(lang) {
+  const key = lang.startsWith('en') ? 'en' : 'es';
+  const cand = voicesFor(key);
+  if (!cand.length) return null;
+  const sel = S.settings.voiceSel && S.settings.voiceSel[key];
+  if (sel) {
+    const v = cand.find(x => x.voiceURI === sel || x.name === sel);
+    if (v) return v;
+  }
+  const pref = key === 'en' ? ['en-gb', 'en-us', 'en'] : ['es-es', 'es-mx', 'es'];
   const score = v =>
     (/(premium)/i.test(v.name + v.voiceURI) ? 8 : 0) +
     (/(enhanced|mejorada)/i.test(v.name + v.voiceURI) ? 6 : 0) +
     (/(siri|natural)/i.test(v.name + v.voiceURI) ? 4 : 0) +
     (v.localService ? 1 : 0) +
-    (pref.indexOf(v.lang.replace('_', '-').toLowerCase()) === 0 ? 1 : 0);
-  cand.sort((a, b) => score(b) - score(a));
-  VOICE_CACHE[lang] = cand[0] || null;
-  return VOICE_CACHE[lang];
+    (v.lang.replace('_', '-').toLowerCase() === pref[0] ? 1 : 0);
+  return cand.slice().sort((a, b) => score(b) - score(a))[0];
 }
 
 function ttsSpeak(text, lang, rate, cb) {
@@ -872,10 +879,18 @@ function renderReview() {
       <button data-f="kumite" class="${filter === 'kumite' ? 'sel' : ''}">Kumite (${counts.kumite})</button>
     </div>`;
 
+  if (ids.length) {
+    html += `<div class="row review-actions">
+      <button class="btn btn-primary" data-act="practice">Practicar (${ids.length})</button>
+      <button class="btn" data-act="practice-car">${CAR_ICON} Coche</button>
+    </div>`;
+  }
+
   if (cur) {
     html += `<div class="card">
       <div style="font-weight:700;margin-bottom:10px">Práctica de repaso en curso · ${cur.answers.length}/${cur.qids.length}</div>
       <button class="btn btn-primary" data-act="resume-review">Continuar</button>
+      <button class="btn" data-act="resume-review-car">${CAR_ICON} Continuar en modo coche</button>
     </div>`;
   }
 
@@ -893,11 +908,6 @@ function renderReview() {
     }
     html += '</div>';
   }
-
-  html += `<div style="flex:1"></div>`;
-  if (ids.length) {
-    html += `<button class="btn btn-primary" data-act="practice">Practicar ${filter === 'all' ? 'todas' : MODULES[filter].label} (${ids.length})</button>`;
-  }
   html += '</div>';
   main.appendChild(h(html));
 
@@ -907,13 +917,20 @@ function renderReview() {
   main.querySelectorAll('.rev-del').forEach(el => {
     el.addEventListener('click', () => { toggleReview(el.dataset.id); render(); });
   });
+  const newReviewAttempt = () => {
+    if (S.current.review && !confirm('Tienes una práctica de repaso en curso. ¿Descartarla?')) return false;
+    S.current.review = { key: 'review', label: 'Repaso', qids: shuffle(ids.slice()), answers: [], started: Date.now() };
+    save();
+    return true;
+  };
   const pr = main.querySelector('[data-act="practice"]');
-  if (pr) pr.addEventListener('click', () => {
-    if (S.current.review && !confirm('Tienes una práctica de repaso en curso. ¿Descartarla?')) return;
-    startAttempt('review', shuffle(ids.slice()), 'Repaso');
-  });
+  if (pr) pr.addEventListener('click', () => { if (newReviewAttempt()) go('quiz', { key: 'review' }); });
+  const pc = main.querySelector('[data-act="practice-car"]');
+  if (pc) pc.addEventListener('click', () => { if (newReviewAttempt()) startCar('review'); });
   const rr = main.querySelector('[data-act="resume-review"]');
   if (rr) rr.addEventListener('click', () => go('quiz', { key: 'review' }));
+  const rrc = main.querySelector('[data-act="resume-review-car"]');
+  if (rrc) rrc.addEventListener('click', () => startCar('review'));
 }
 
 /* ---------- reglas (reglamentos con lectura en voz alta) ---------- */
@@ -948,11 +965,14 @@ function renderRules() {
   if (last) {
     const b = BOOK_BY[last.book];
     const sec = b.sections[last.si];
-    html += `<button class="continue-card" data-act="continue">
-      <span class="row-eyebrow" style="color:var(--blue)">Continuar escuchando</span>
-      <span class="row-title">${esc(b.g)} ${esc(b.title)} · ${esc(sec.n || nice(sec.t))}</span>
-      <span class="row-sub">${esc(nice(sec.t))}</span>
-    </button>`;
+    html += `<div class="continue-wrap">
+      <button class="continue-card" data-act="continue">
+        <span class="row-eyebrow" style="color:var(--blue)">Continuar escuchando</span>
+        <span class="row-title">${esc(b.g)} ${esc(b.title)} · ${esc(sec.n || nice(sec.t))}</span>
+        <span class="row-sub">${esc(nice(sec.t))}</span>
+      </button>
+      <button class="continue-close" data-act="dismiss" aria-label="cerrar">${CROSS}</button>
+    </div>`;
   }
 
   for (const group of ['WKF', 'RFEK']) {
@@ -977,6 +997,12 @@ function renderRules() {
   });
   const c = main.querySelector('[data-act="continue"]');
   if (c) c.addEventListener('click', () => go('reader', { book: last.book, si: last.si }));
+  const d = main.querySelector('[data-act="dismiss"]');
+  if (d) d.addEventListener('click', () => {
+    delete S.rulesPos;
+    save();
+    render();
+  });
 }
 
 function renderRulebook() {
@@ -1262,6 +1288,22 @@ function renderSettings() {
     <p class="note">El modo coche lee las preguntas en voz alta y escucha tu respuesta («verdadero» / «falso»).
     Leer funciona sin conexión; escuchar necesita internet (datos móviles).</p>
 
+    <div class="set-label">QUÉ VOZ USAR</div>
+    ${['es', 'en'].map(k => {
+      const voices = voicesFor(k);
+      const sel = S.settings.voiceSel[k];
+      return `<div class="voice-row">
+        <select class="voice-select" data-vk="${k}">
+          <option value="">${k === 'es' ? 'Español' : 'English'} · automática (la mejor)</option>
+          ${voices.map(v => `<option value="${esc(v.voiceURI)}" ${v.voiceURI === sel ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}
+        </select>
+        <button class="btn voice-test" data-test="${k}">Oír</button>
+      </div>`;
+    }).join('')}
+    <p class="note">Las voces salen de tu iPhone. Para que suenen naturales, descarga una voz mejorada en
+    Ajustes de iOS → Accesibilidad → Contenido leído → Voces (p. ej. «Mónica (mejorada)»), reinicia la app
+    y elígela aquí — iOS no aplica a las webs la voz por defecto del sistema.</p>
+
     <div class="set-label">COPIA DE SEGURIDAD</div>
     <button class="btn" data-act="export">Copiar copia de seguridad</button>
     <button class="btn" data-act="import">Importar copia de seguridad</button>
@@ -1276,9 +1318,27 @@ function renderSettings() {
     <button class="btn btn-danger" data-act="wipe">Borrar todos los datos</button>
 
     <div style="flex:1"></div>
-    <p class="note" style="text-align:center">Kracademy Exam Trainer · ${QUESTIONS.length} preguntas · WKF Jul 2026</p>
+    <p class="note" style="text-align:center">Kracademy Exam Trainer · ${QUESTIONS.length} preguntas · WKF Jul 2026<br>© 2026 Oriol Aragon</p>
   </div>`;
   main.appendChild(h(html));
+
+  main.querySelectorAll('.voice-select').forEach(el => {
+    el.addEventListener('change', () => {
+      S.settings.voiceSel[el.dataset.vk] = el.value;
+      save();
+    });
+  });
+  main.querySelectorAll('.voice-test').forEach(el => {
+    el.addEventListener('click', () => {
+      const k = el.dataset.test;
+      ttsUnlock();
+      try { speechSynthesis.cancel(); } catch (e) {}
+      setTimeout(() => {
+        ttsSpeak(k === 'es' ? 'Hola, así leo yo las preguntas del examen.' : 'Hello, this is how I read the exam questions.',
+          k === 'es' ? 'es-ES' : 'en-GB', 1.0, null);
+      }, 150);
+    });
+  });
 
   main.querySelectorAll('[data-lang]').forEach(el => {
     el.addEventListener('click', () => {
@@ -1343,7 +1403,10 @@ function renderSettings() {
 // precargar las voces del sistema (iOS las carga en diferido)
 if ('speechSynthesis' in window) {
   speechSynthesis.getVoices();
-  speechSynthesis.onvoiceschanged = () => { VOICE_CACHE = {}; speechSynthesis.getVoices(); };
+  speechSynthesis.onvoiceschanged = () => {
+    speechSynthesis.getVoices();
+    if (view.screen === 'settings') render();
+  };
 }
 
 render();

@@ -344,6 +344,23 @@ textarea.backup {
 }
 .note { font-size: 0.78rem; color: var(--muted); line-height: 1.45; margin-top: 8px; }
 
+.home-copy { text-align: center; font-size: 0.72rem; color: #c7c7cc; font-weight: 600; margin-top: -2px; }
+
+.review-actions { gap: 10px; margin-bottom: 16px; }
+.review-actions .btn { margin: 0; }
+.review-actions [data-act="practice"] { flex: 1.4; }
+.review-actions [data-act="practice-car"] { flex: 1; }
+
+.voice-row { display: flex; gap: 10px; margin-bottom: 10px; }
+.voice-row .voice-select {
+  flex: 1; min-width: 0;
+  border: 0; font: inherit; font-size: 0.92rem; font-weight: 600;
+  background: var(--card); color: var(--text);
+  border-radius: 14px; padding: 14px 12px;
+  -webkit-appearance: none; appearance: none;
+}
+.voice-row .voice-test { width: 76px; flex-shrink: 0; margin: 0; padding: 14px 0; }
+
 /* ---------- reglas ---------- */
 .h2-sub { font-weight: 600; color: var(--muted); font-size: 0.8rem; }
 .list-card { padding: 6px 16px; }
@@ -366,15 +383,26 @@ textarea.backup {
 .book-sub { color: var(--muted); font-size: 0.78rem; font-weight: 600; flex-shrink: 0; }
 .chev { color: #c7c7cc; font-size: 1.3rem; font-weight: 600; flex-shrink: 0; }
 
+.continue-wrap { position: relative; margin-bottom: 20px; }
 .continue-card {
   display: flex; flex-direction: column; gap: 3px;
   width: 100%; border: 0; font: inherit; text-align: left; color: var(--text);
   background: #e5f1ff;
   border-radius: var(--radius);
-  padding: 16px 18px;
-  margin-bottom: 20px;
+  padding: 16px 44px 16px 18px;
 }
 .continue-card:active { filter: brightness(0.96); }
+.continue-close {
+  position: absolute; top: 10px; right: 10px;
+  border: 0; background: rgba(0, 122, 255, 0.12);
+  border-radius: 50%;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.continue-close svg {
+  width: 14px; height: 14px;
+  fill: none; stroke: var(--blue); stroke-width: 2.2; stroke-linecap: round;
+}
 
 /* cabecera con botón atrás arriba */
 .page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
