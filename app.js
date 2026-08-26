@@ -875,8 +875,22 @@ BOOKS.forEach(b => { BOOK_BY[b.id] = b; });
 
 let reader = null; // reproducción de reglamento en curso
 
+// Los títulos vienen del PDF en MAYÚSCULAS: pasarlos a frase conservando la jerga
+const ACRO = ['WKF', 'RFEK', 'KANSA', 'KIKEN', 'SENSHU', 'HANSOKU', 'CHUI', 'SHIKKAKU', 'JOGAI', 'YAME', 'BUNKAI', 'ATO SHIBARAKU'];
+function nice(t) {
+  let s = t.toLowerCase();
+  s = s.charAt(0).toUpperCase() + s.slice(1);
+  for (const a of ACRO) s = s.replace(new RegExp('\\b' + a.toLowerCase() + '\\b', 'g'), a);
+  s = s.replace(/\bkata\b/g, 'Kata').replace(/\bkumite\b/g, 'Kumite').replace(/\bkarate\b/g, 'Karate');
+  return s;
+}
+
+function secMinutes(sec) {
+  return Math.max(1, Math.round(sec.p.join(' ').length / 850));
+}
+
 function renderRules() {
-  const last = S.rulesPos && BOOK_BY[S.rulesPos.book] ? S.rulesPos : null;
+  const last = S.rulesPos && BOOK_BY[S.rulesPos.book] && BOOK_BY[S.rulesPos.book].sections[S.rulesPos.si] ? S.rulesPos : null;
   let html = `<div class="screen-fill">
     <h1>Reglas</h1>
     <p class="subtitle">Reglamentos 2026 · lectura en voz alta</p>`;
@@ -884,20 +898,22 @@ function renderRules() {
   if (last) {
     const b = BOOK_BY[last.book];
     const sec = b.sections[last.si];
-    if (sec) {
-      html += `<button class="btn" data-act="continue" style="margin-bottom:18px;text-align:left">
-        <span style="display:block;font-size:0.75rem;color:var(--muted);font-weight:700;margin-bottom:3px">CONTINUAR</span>
-        ${esc(b.g)} ${esc(b.title)} · ${esc(sec.t.length > 44 ? sec.t.slice(0, 44) + '…' : sec.t)}
-      </button>`;
-    }
+    html += `<button class="continue-card" data-act="continue">
+      <span class="row-eyebrow" style="color:var(--blue)">Continuar escuchando</span>
+      <span class="row-title">${esc(b.g)} ${esc(b.title)} · ${esc(sec.n || nice(sec.t))}</span>
+      <span class="row-sub">${esc(nice(sec.t))}</span>
+    </button>`;
   }
 
   for (const group of ['WKF', 'RFEK']) {
-    html += `<h2>${group} <span style="font-weight:600;color:var(--muted);font-size:0.8rem">· ${group === 'WKF' ? 'inglés' : 'castellano'}</span></h2><div class="card list-card">`;
+    html += `<h2>${group} <span class="h2-sub">· ${group === 'WKF' ? 'inglés' : 'castellano'}</span></h2><div class="card list-card">`;
     for (const b of BOOKS.filter(x => x.g === group)) {
+      const mins = b.sections.reduce((a, s) => a + secMinutes(s), 0);
       html += `<button class="book-row" data-book="${b.id}">
-        <span class="book-title">${esc(b.title)}</span>
-        <span class="book-sub">${b.sections.length} secciones</span>
+        <span class="row-main">
+          <span class="row-title">${esc(b.title)}</span>
+          <span class="row-sub">${b.sections.length} secciones · ${mins} min</span>
+        </span>
         <span class="chev">›</span>
       </button>`;
     }
@@ -917,19 +933,25 @@ function renderRulebook() {
   const b = BOOK_BY[view.book];
   if (!b) { go('rules'); return; }
   let html = `<div class="screen-fill">
-    <h1>${esc(b.title)}</h1>
-    <p class="subtitle">${b.g} 2026 · ${b.lang === 'en' ? 'inglés' : 'castellano'}</p>
+    <div class="page-head">
+      <button class="back-pill" data-act="back">‹</button>
+      <div>
+        <div class="eyebrow">${b.g} 2026 · ${b.lang === 'en' ? 'inglés' : 'castellano'}</div>
+        <h1 class="page-title">${esc(b.title)}</h1>
+      </div>
+    </div>
     <div class="card list-card">`;
   b.sections.forEach((s, i) => {
     html += `<button class="book-row" data-si="${i}">
-      <span class="book-title sec">${esc(s.t)}</span>
-      <span class="book-sub">${Math.max(1, Math.round(s.x.length / 850))} min</span>
+      <span class="row-main">
+        ${s.n ? `<span class="row-eyebrow">${esc(s.n)}</span>` : ''}
+        <span class="row-title sec">${esc(nice(s.t))}</span>
+      </span>
+      <span class="book-sub">${secMinutes(s)} min</span>
       <span class="chev">›</span>
     </button>`;
   });
-  html += `</div>
-    <button class="btn btn-ghost" data-act="back">‹ Reglas</button>
-  </div>`;
+  html += `</div></div>`;
   main.appendChild(h(html));
   main.querySelectorAll('.book-row').forEach(el => {
     el.addEventListener('click', () => go('reader', { book: b.id, si: Number(el.dataset.si) }));
@@ -939,19 +961,30 @@ function renderRulebook() {
 
 /* --- motor de lectura --- */
 
-function chunksOf(text) {
-  // trocear en frases agrupadas (~260 caracteres) para que iOS no corte la voz
-  const out = [];
-  for (const para of text.split('\n')) {
+function sectionChunks(sec) {
+  // por párrafo, frases agrupadas (~240 caracteres): iOS corta las utterances largas
+  const groups = [];
+  for (const para of sec.p) {
     const sentences = para.match(/[^.!?:]+[.!?:]+["»)]*\s*|[^.!?:]+$/g) || [para];
+    const g = [];
     let buf = '';
     for (const s of sentences) {
-      if (buf && buf.length + s.length > 260) { out.push(buf.trim()); buf = ''; }
+      if (buf && buf.length + s.length > 240) { g.push(buf.trim()); buf = ''; }
       buf += s;
     }
-    if (buf.trim()) out.push(buf.trim());
+    if (buf.trim()) g.push(buf.trim());
+    if (g.length) groups.push(g);
   }
-  return out.filter(c => c.length > 1);
+  return groups;
+}
+
+function flatChunks(groups) {
+  // pausa corta entre frases, larga al acabar cada párrafo
+  const flat = [];
+  groups.forEach(g => {
+    g.forEach((text, j) => flat.push({ text, gap: j === g.length - 1 ? 700 : 300 }));
+  });
+  return flat;
 }
 
 function readerStart(bookId, si, fromChunk) {
@@ -960,7 +993,8 @@ function readerStart(bookId, si, fromChunk) {
   if (reader) readerStop();
   else if (speechSynthesis.speaking || speechSynthesis.pending) { try { speechSynthesis.cancel(); } catch (e) {} }
   ttsUnlock(); // dentro del gesto: desbloquea el audio en iOS y re-arma el motor tras un cancel()
-  reader = { book: bookId, si, chunks: chunksOf(sec.x), ci: fromChunk || 0, playing: true, first: true };
+  const groups = sectionChunks(sec);
+  reader = { book: bookId, si, groups, flat: flatChunks(groups), ci: fromChunk || 0, playing: true, first: true };
   S.rulesPos = { book: bookId, si };
   save();
   requestReaderWake();
@@ -980,13 +1014,14 @@ document.addEventListener('visibilitychange', () => {
 function readerSpeakChunk() {
   if (!reader || !reader.playing) return;
   const b = BOOK_BY[reader.book];
-  if (reader.ci >= reader.chunks.length) { readerSectionDone(); return; }
-  const text = reader.chunks[reader.ci];
-  const u = ttsSpeak(text, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.05, () => {
+  if (reader.ci >= reader.flat.length) { readerSectionDone(); return; }
+  const item = reader.flat[reader.ci];
+  const u = ttsSpeak(item.text, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.0, () => {
     if (!reader || !reader.playing) return;
     reader.ci++;
     readerHighlight();
-    readerSpeakChunk();
+    // respirar entre frases y algo más entre párrafos
+    reader.gapTimer = setTimeout(() => { if (reader && reader.playing) readerSpeakChunk(); }, item.gap);
   });
   if (reader.first) { reader.first = false; ttsWatchdog(u); }
   readerHighlight();
@@ -997,13 +1032,16 @@ function readerSectionDone() {
   const b = BOOK_BY[reader.book];
   const next = reader.si + 1;
   if (next < b.sections.length) {
-    const title = b.sections[next].t;
+    const sec = b.sections[next];
+    const title = (sec.n ? sec.n + '. ' : '') + nice(sec.t);
     setTimeout(() => {
       if (!reader || !reader.playing) return;
       ttsSpeak(title, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.0, () => {
-        if (reader && reader.playing) go('reader', { book: reader.book, si: next, autoplay: true });
+        if (reader && reader.playing) setTimeout(() => {
+          if (reader && reader.playing) go('reader', { book: reader.book, si: next, autoplay: true });
+        }, 500);
       });
-    }, 700);
+    }, 1100);
   } else {
     reader.playing = false;
     readerHighlight();
@@ -1014,6 +1052,7 @@ function readerSectionDone() {
 function readerPause() {
   if (!reader) return;
   reader.playing = false;
+  clearTimeout(reader.gapTimer);
   speechSynthesis.cancel();
   if (reader.wake) { try { reader.wake.release(); } catch (e) {} }
   renderIfReader();
@@ -1031,6 +1070,7 @@ function readerResume() {
 function readerStop() {
   if (!reader) return;
   reader.playing = false;
+  clearTimeout(reader.gapTimer);
   try { speechSynthesis.cancel(); } catch (e) {}
   if (reader.wake) { try { reader.wake.release(); } catch (e) {} }
   reader = null;
@@ -1048,7 +1088,7 @@ function readerHighlight() {
     el.classList.toggle('now', on);
     if (on) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   });
-  if (btn) btn.textContent = reader.playing ? 'Pausa' : (reader.ci >= reader.chunks.length ? 'Volver a escuchar' : 'Reanudar');
+  if (btn) btn.textContent = reader.playing ? 'Pausa' : (reader.ci >= reader.flat.length ? 'Volver a escuchar' : 'Reanudar');
 }
 
 function renderReader() {
@@ -1057,29 +1097,38 @@ function renderReader() {
   const si = view.si || 0;
   const sec = b.sections[si];
   const active = reader && reader.book === b.id && reader.si === si;
-  const chunks = active ? reader.chunks : chunksOf(sec.x);
+  const groups = active ? reader.groups : sectionChunks(sec);
 
-  let html = `<div class="screen-fill">
-    <div class="quiz-top">
-      <span class="quiz-meta">${esc(b.g)} ${esc(b.title)} · ${si + 1} de ${b.sections.length}</span>
+  let gi = 0;
+  const paras = groups.map(g => {
+    const spans = g.map(c => {
+      const now = active && reader.playing && gi === reader.ci;
+      return `<span class="chunk${now ? ' now' : ''}" data-i="${gi++}">${esc(c)}</span>`;
+    }).join(' ');
+    return `<p class="para">${spans}</p>`;
+  }).join('');
+
+  const html = `<div class="screen-fill">
+    <div class="page-head">
+      <button class="back-pill" data-act="back">‹</button>
+      <div>
+        <div class="eyebrow">${esc(b.g)} ${esc(b.title)} · ${si + 1} de ${b.sections.length}${sec.n ? ' · ' + esc(sec.n) : ''}</div>
+        <h1 class="page-title">${esc(nice(sec.t))}</h1>
+      </div>
     </div>
-    <h1 class="reader-title">${esc(sec.t)}</h1>
-    <div class="reader-text">
-      ${chunks.map((c, i) => `<span class="chunk${active && reader.playing && i === reader.ci ? ' now' : ''}">${esc(c)}</span>`).join(' ')}
-    </div>
+    <div class="reader-text">${paras}</div>
     <div class="reader-controls">
       <button class="btn reader-nav" data-act="prev" ${si === 0 ? 'disabled' : ''}>‹</button>
-      <button class="btn btn-primary" data-act="play">${active && reader.playing ? 'Pausa' : (active && reader.ci > 0 && reader.ci < reader.chunks.length ? 'Reanudar' : 'Escuchar')}</button>
+      <button class="btn btn-primary" data-act="play">${active && reader.playing ? 'Pausa' : (active && reader.ci > 0 && reader.ci < reader.flat.length ? 'Reanudar' : 'Escuchar')}</button>
       <button class="btn reader-nav" data-act="next" ${si >= b.sections.length - 1 ? 'disabled' : ''}>›</button>
     </div>
-    <button class="btn btn-ghost" data-act="back">‹ ${esc(b.title)}</button>
   </div>`;
   main.appendChild(h(html));
 
   main.querySelector('[data-act="play"]').addEventListener('click', () => {
     const act = reader && reader.book === b.id && reader.si === si;
     if (act && reader.playing) readerPause();
-    else if (act && !reader.playing && reader.ci < reader.chunks.length) readerResume();
+    else if (act && !reader.playing && reader.ci < reader.flat.length) readerResume();
     else readerStart(b.id, si, 0);
   });
   main.querySelector('[data-act="prev"]').addEventListener('click', () => {
