@@ -441,6 +441,7 @@ textarea.backup {
 .car-status.ok .car-circle { background: var(--green-bg); color: var(--green-dark); }
 .car-status.ko .car-circle { background: var(--red-bg); color: var(--red-dark); }
 .car-label { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.01em; }
+.car-heard { font-size: 0.85rem; color: var(--muted); margin-top: 6px; min-height: 1.2em; }
 .car-status.ok .car-label { color: var(--green-dark); }
 .car-status.ko .car-label { color: var(--red-dark); }
 @keyframes car-pulse {

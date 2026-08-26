@@ -406,10 +406,35 @@ function ttsUnlock() {
   } catch (e) {}
 }
 
+/* Elegir la mejor voz instalada: en iOS las "Enhanced/Premium/Siri" suenan
+   mucho más naturales que la compacta por defecto */
+let VOICE_CACHE = {};
+function pickVoice(lang) {
+  const list = speechSynthesis.getVoices();
+  if (!list.length) return null;
+  if (VOICE_CACHE[lang] !== undefined) return VOICE_CACHE[lang];
+  const pref = lang.startsWith('en') ? ['en-gb', 'en-us', 'en'] : ['es-es', 'es-mx', 'es'];
+  const cand = list.filter(v => {
+    const vl = v.lang.replace('_', '-').toLowerCase();
+    return pref.some(p => vl.startsWith(p));
+  });
+  const score = v =>
+    (/(premium)/i.test(v.name + v.voiceURI) ? 8 : 0) +
+    (/(enhanced|mejorada)/i.test(v.name + v.voiceURI) ? 6 : 0) +
+    (/(siri|natural)/i.test(v.name + v.voiceURI) ? 4 : 0) +
+    (v.localService ? 1 : 0) +
+    (pref.indexOf(v.lang.replace('_', '-').toLowerCase()) === 0 ? 1 : 0);
+  cand.sort((a, b) => score(b) - score(a));
+  VOICE_CACHE[lang] = cand[0] || null;
+  return VOICE_CACHE[lang];
+}
+
 function ttsSpeak(text, lang, rate, cb) {
   const u = new SpeechSynthesisUtterance(text);
   u.lang = lang;
   u.rate = rate;
+  const v = pickVoice(lang);
+  if (v) u.voice = v;
   let done = false;
   const fin = () => { if (!done) { done = true; TTS_KEEP.delete(u); if (cb) cb(); } };
   u.onstart = () => { u._started = true; };
@@ -466,7 +491,7 @@ function speak(text, cb) {
   const lang = S.settings.voice;
   let done = false;
   const fin = () => { if (!done) { done = true; if (cb) cb(); } };
-  const u = ttsSpeak(text, lang === 'en' ? 'en-GB' : 'es-ES', 1.05, fin);
+  const u = ttsSpeak(text, lang === 'en' ? 'en-GB' : 'es-ES', 1.0, fin);
   // iOS a veces se traga onend: temporizador de seguridad proporcional al texto
   if (cb) carTimer(fin, Math.max(4000, text.length * 110) + 1500);
   return u;
@@ -486,6 +511,7 @@ function carNext() {
   if (idx === null) { carFinish(); return; }
   car.q = QBY[at.qids[idx]];
   car.phase = 'speaking';
+  car.heard = '';
   renderIfCar();
   if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
   const q = car.q;
@@ -521,30 +547,49 @@ function carRevealPodcast() {
 }
 
 function parseVoice(t) {
-  t = ' ' + t.toLowerCase() + ' ';
-  if (/verdadero|verdad|cierto| true | tru | sí | si /.test(t)) return { type: 'answer', val: true };
-  if (/falso| false | fols |mentira/.test(t)) return { type: 'answer', val: false };
-  if (/repaso|marcar|márcala/.test(t)) return { type: 'review' };
+  // sin acentos ni signos, en minúsculas, con espacios en los bordes
+  t = ' ' + t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ') + ' ';
+  if (/verdader|verdad|cierto| true | tru | chu | si /.test(t)) return { type: 'answer', val: true };
+  if (/fals|mentira| fols /.test(t)) return { type: 'answer', val: false };
+  if (/repaso|marcar|marcala/.test(t)) return { type: 'review' };
   if (/repetir|repite|otra vez/.test(t)) return { type: 'repeat' };
   if (/salir|terminar|acabar/.test(t)) return { type: 'exit' };
   return null;
+}
+
+function carHeard(txt) {
+  if (!car) return;
+  car.heard = txt;
+  const el = main.querySelector('.car-heard');
+  if (el) el.textContent = txt;
 }
 
 function carListen() {
   if (!car) return;
   car.phase = 'listening';
   renderIfCar();
+  // dejar que la sesión de audio suelte el altavoz antes de abrir el micro (iOS)
+  carTimer(() => carListenNow(), 350);
+}
+
+function carListenNow() {
+  if (!car || car.phase !== 'listening') return;
   let rec;
   try { rec = new SRClass(); } catch (e) { carToPodcast(); return; }
   car.rec = rec;
   rec.lang = 'es-ES';
+  rec.continuous = true;
   rec.interimResults = true;
-  rec.maxAlternatives = 3;
+  rec.maxAlternatives = 5;
   let handled = false;
   rec.onresult = (e) => {
     if (handled || !car) return;
     let txt = '';
-    for (const res of e.results) txt += ' ' + res[0].transcript;
+    for (let i = 0; i < e.results.length; i++) {
+      for (let j = 0; j < e.results[i].length; j++) txt += ' ' + e.results[i][j].transcript;
+    }
+    txt = txt.trim();
+    if (txt) carHeard('«' + txt.slice(-48) + '»');
     const cmd = parseVoice(txt);
     if (cmd) {
       handled = true;
@@ -557,12 +602,16 @@ function carListen() {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
       handled = true;
       carToPodcast();
+    } else if (e.error === 'no-speech') {
+      carHeard('no te he oído, prueba otra vez…');
+    } else if (e.error === 'network') {
+      carHeard('sin conexión para el dictado…');
     }
-    // 'no-speech' y demás: onend relanza la escucha
+    // onend relanza la escucha
   };
   rec.onend = () => {
     if (!car || handled || car.phase !== 'listening') return;
-    carTimer(() => { if (car && car.phase === 'listening') carListen(); }, 300);
+    carTimer(() => { if (car && car.phase === 'listening') carListenNow(); }, 250);
   };
   try { rec.start(); } catch (e) { carToPodcast(); }
 }
@@ -701,6 +750,7 @@ function renderCar() {
     <div class="car-status ${st.cls}">
       <div class="car-circle">${st.ico}</div>
       <div class="car-label">${stLabel}</div>
+      <div class="car-heard">${car.phase === 'listening' && car.heard ? esc(car.heard) : ''}</div>
     </div>
 
     <div class="car-q">${q ? esc(lang === 'en' ? q.en : (q.es || q.en)) : ''}</div>
@@ -1293,7 +1343,7 @@ function renderSettings() {
 // precargar las voces del sistema (iOS las carga en diferido)
 if ('speechSynthesis' in window) {
   speechSynthesis.getVoices();
-  speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+  speechSynthesis.onvoiceschanged = () => { VOICE_CACHE = {}; speechSynthesis.getVoices(); };
 }
 
 render();
