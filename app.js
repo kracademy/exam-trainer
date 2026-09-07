@@ -154,9 +154,9 @@ function accuracy(mod) {
   return total ? Math.round((ok / total) * 100) : null;
 }
 
-/* Karatekas de línea del Referee Trainer: shiko-dachi (kata) y kizami-tsuki (kumite) */
+/* Karatekas de línea: neko-ashi-dachi con shuto (kata, variante 1 elegida por Oriol) y kizami-tsuki (kumite) */
 const MOD_ICONS = {
-  kata: '<svg viewBox="0 0 24 24"><circle cx="12" cy="4.3" r="2.1"/><path d="M12 6.4v6"/><path d="M12 8.3 5.8 8.9M12 8.3l6.2.6"/><circle cx="4.7" cy="9" r="1.05" fill="currentColor" stroke="none"/><circle cx="19.3" cy="9" r="1.05" fill="currentColor" stroke="none"/><path d="M12 12.4 5.3 15.4l-.2 4.1M3.2 19.8H7"/><path d="M12 12.4l6.7 3 .2 4.1M17 19.8h3.8"/></svg>',
+  kata: '<svg viewBox="0 0 24 24"><circle cx="12.6" cy="3.9" r="1.8"/><path d="M12.1 6 11.2 12.2"/><path d="M12.1 7 15.3 8.3 19 7.3 20.4 6.5"/><path d="M12.1 7 9.3 9.1 11.3 10.7"/><path d="M11.2 12.2 7.9 14.5 8.4 19.7"/><path d="M11.2 12.2 14.5 14.9 15.7 19.7"/></svg>',
   kumite: '<svg viewBox="0 0 24 24"><circle cx="6.6" cy="6.8" r="1.8"/><path d="M6.1 8.9 4.9 13.4"/><path d="M6.3 9.4l8.6-2.2"/><path d="M6.3 9.9 4 11.8"/><path d="M4.9 13.4l3.9 2.8-.3 4.2"/><path d="M4.9 13.4l-2.9 6"/><circle cx="19.1" cy="5.7" r="1.8"/><path d="M18.5 7.6l-1.1 5.5"/><path d="M18.2 8.3l-2.9 2.2"/><path d="M17.4 13.1l-1.7 6.3"/><path d="M17.4 13.1l3.9 5.6"/></svg>',
 };
 
