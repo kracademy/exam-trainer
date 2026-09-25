@@ -467,10 +467,21 @@ function ttsWatchdog(u) {
 
 let car = null; // sesión de voz activa
 
+/* Estabilidad del modo coche
+   - Cada paso (pregunta, respuesta, pausa…) sube car.gen: cualquier aviso tardío de un paso
+     anterior (frase cortada, micro viejo, temporizador) se ignora en vez de hacer avanzar el flujo.
+   - Al salir de la app (llamada, crono…) se para todo; al volver se relee la pregunta desde cero.
+   - El micro se abre con margen tras hablar (el Bluetooth del coche va con retraso) y nunca se
+     evalúa lo que oye mientras la app está hablando: así no se "responde" a sí misma. */
+
 function startCar(key) {
   if (!('speechSynthesis' in window)) { toast('Este navegador no puede leer en voz alta'); return; }
   ttsUnlock(); // dentro del gesto del usuario: desbloquea el audio en iOS
-  car = { key, phase: 'speaking', timers: [], rec: null, lastQid: null, podcast: !SRClass, pIdx: null, first: true };
+  car = {
+    key, phase: 'speaking', timers: [], rec: null, recId: 0, gen: 0,
+    paused: false, stuck: false, fails: 0,
+    lastQid: null, podcast: !SRClass, pIdx: null, first: true,
+  };
   if (car.podcast) {
     const at = S.current[key];
     car.pIdx = at ? at.answers.length : 0;
@@ -485,19 +496,85 @@ async function requestWake() {
     if (car && navigator.wakeLock) car.wake = await navigator.wakeLock.request('screen');
   } catch (e) { /* sin wake lock: la pantalla puede apagarse */ }
 }
+
 document.addEventListener('visibilitychange', () => {
-  if (car && document.visibilityState === 'visible') requestWake();
+  if (!car) return;
+  if (document.visibilityState === 'hidden') carPause();
+  else carReturn();
 });
+window.addEventListener('pagehide', () => { if (car) carPause(); });
+
+function carStopRec() {
+  if (!car || !car.rec) return;
+  const r = car.rec;
+  car.rec = null;
+  car.recId++;
+  try { r.onresult = null; r.onerror = null; r.onend = null; r.onstart = null; r.onaudiostart = null; r.abort(); } catch (e) {}
+}
+
+// invalida todo lo pendiente del paso anterior
+function carStep() {
+  car.gen++;
+  car.timers.forEach(clearTimeout);
+  car.timers = [];
+  carStopRec();
+}
 
 function carTimer(fn, ms) {
   if (!car) return;
-  car.timers.push(setTimeout(() => { if (car) fn(); }, ms));
+  const g = car.gen;
+  car.timers.push(setTimeout(() => { if (car && car.gen === g && !car.paused) fn(); }, ms));
+}
+
+function carPause() {
+  if (!car || car.paused) return;
+  if (car.phase === 'bye') { carExit(); return; }
+  carStep();
+  car.paused = true;
+  car.phase = 'paused';
+  try { speechSynthesis.cancel(); } catch (e) {}
+  if (car.wake) { try { car.wake.release(); } catch (e) {} car.wake = null; }
+  renderIfCar();
+}
+
+function carReturn() {
+  if (!car || !car.paused || car.stuck) return;
+  requestWake();
+  renderIfCar();
+  // dar tiempo a iOS a devolver la sesión de audio antes de hablar y escuchar
+  const g = car.gen;
+  car.timers.push(setTimeout(() => { if (car && car.paused && car.gen === g) carResume(); }, 1200));
+}
+
+function carResume() {
+  if (!car || !car.paused) return;
+  car.paused = false;
+  car.stuck = false;
+  car.fails = 0;
+  ttsUnlock();
+  requestWake();
+  carNext(true);
+}
+
+// el micro no arranca tras varios intentos: parar y pedir un toque (que además re-desbloquea el audio)
+function carStuck() {
+  carStep();
+  car.paused = true;
+  car.stuck = true;
+  car.phase = 'paused';
+  renderIfCar();
+  speak(S.settings.voice === 'en' ? 'I cannot hear you. Tap continue.' : 'No te oigo bien. Toca continuar.', null);
 }
 
 function speak(text, cb) {
   const lang = S.settings.voice;
+  const g = car ? car.gen : -1;
   let done = false;
-  const fin = () => { if (!done) { done = true; if (cb) cb(); } };
+  const fin = () => {
+    if (done) return;
+    done = true;
+    if (cb && car && car.gen === g && !car.paused) cb();
+  };
   const u = ttsSpeak(text, lang === 'en' ? 'en-GB' : 'es-ES', 1.0, fin);
   // iOS a veces se traga onend: temporizador de seguridad proporcional al texto
   if (cb) carTimer(fin, Math.max(4000, text.length * 110) + 1500);
@@ -511,8 +588,9 @@ function carIdx() {
   return idx < at.qids.length ? idx : null;
 }
 
-function carNext() {
+function carNext(resumed) {
   if (!car) return;
+  carStep();
   const at = S.current[car.key];
   const idx = at ? carIdx() : null;
   if (idx === null) { carFinish(); return; }
@@ -522,12 +600,11 @@ function carNext() {
   renderIfCar();
   if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
   const q = car.q;
-  const text = S.settings.voice === 'en' ? q.en : (q.es || q.en);
+  const en = S.settings.voice === 'en';
+  const text = (resumed ? (en ? "Let's continue. " : 'Seguimos. ') : '') + (en ? q.en : (q.es || q.en));
   // pequeño respiro tras cancel(): en iOS, cancel+speak en el mismo tick deja el motor mudo
   carTimer(() => {
-    if (!car || car.q !== q) return;
     const u = speak(text, () => {
-      if (!car) return;
       if (car.podcast) {
         car.phase = 'wait';
         renderIfCar();
@@ -537,7 +614,7 @@ function carNext() {
       }
     });
     if (car.first) { car.first = false; ttsWatchdog(u); }
-  }, 120);
+  }, resumed ? 300 : 120);
 }
 
 function carRevealPodcast() {
@@ -547,20 +624,38 @@ function carRevealPodcast() {
   renderIfCar();
   const lang = S.settings.voice;
   speak(q.a ? (lang === 'en' ? 'True' : 'Verdadero') : (lang === 'en' ? 'False' : 'Falso'), () => {
-    if (!car) return;
     car.pIdx++;
     carTimer(() => carNext(), 900);
   });
 }
 
-function parseVoice(t) {
-  // sin acentos ni signos, en minúsculas, con espacios en los bordes
-  t = ' ' + t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ') + ' ';
-  if (/verdader|verdad|cierto| true | tru | chu | si /.test(t)) return { type: 'answer', val: true };
-  if (/fals|mentira| fols /.test(t)) return { type: 'answer', val: false };
-  if (/repaso|marcar|marcala/.test(t)) return { type: 'review' };
-  if (/repetir|repite|otra vez/.test(t)) return { type: 'repeat' };
-  if (/salir|terminar|acabar/.test(t)) return { type: 'exit' };
+function normVoice(t) {
+  return t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function parseVoice(t, isFinal, q) {
+  const n = normVoice(t);
+  if (!n) return null;
+  const w = n.split(' ');
+  // una respuesta es corta: las frases largas son conversación o la propia pregunta (eco)
+  if (w.length > 6) return null;
+  // eco: si todo lo oído está en la pregunta que acaba de leer, es la app oyéndose a sí misma
+  if (q && w.length >= 2) {
+    const qw = new Set(normVoice((q.es || '') + ' ' + q.en).split(' '));
+    if (w.every(x => qw.has(x))) return null;
+  }
+  const yes = w.some(x => x.startsWith('verdader') || x === 'verdad' || x === 'true' || x === 'tru' || x === 'truth');
+  const no = w.some(x => x.startsWith('fals') || x === 'mentira' || x === 'false' || x === 'fols');
+  if (yes && !no) return { type: 'answer', val: true };
+  if (no && !yes) return { type: 'answer', val: false };
+  // «sí», «cierto», «chu»: palabras que también salen en las preguntas → solo si es lo único que has dicho
+  if (!yes && !no && isFinal && w.length <= 2 && w.some(x => x === 'si' || x === 'cierto' || x === 'chu')) {
+    return { type: 'answer', val: true };
+  }
+  if (w.some(x => x === 'repaso' || x === 'marcar' || x === 'marcala')) return { type: 'review' };
+  if (w.some(x => x === 'repetir' || x === 'repite') || n.includes('otra vez')) return { type: 'repeat' };
+  if (w.some(x => x === 'salir' || x === 'terminar' || x === 'acabar')) return { type: 'exit' };
   return null;
 }
 
@@ -574,58 +669,68 @@ function carHeard(txt) {
 function carListen() {
   if (!car) return;
   car.phase = 'listening';
+  car.heard = '';
   renderIfCar();
-  // dejar que la sesión de audio suelte el altavoz antes de abrir el micro (iOS)
-  carTimer(() => carListenNow(), 350);
+  // margen para que termine de sonar el altavoz (Bluetooth/CarPlay van con retraso) y no oírse a sí misma
+  carTimer(() => carListenNow(), 700);
 }
 
 function carListenNow() {
-  if (!car || car.phase !== 'listening') return;
+  if (!car || car.paused || car.phase !== 'listening') return;
+  if (car.fails >= 4) { carStuck(); return; }
+  carStopRec();
   let rec;
   try { rec = new SRClass(); } catch (e) { carToPodcast(); return; }
+  const g = car.gen;
+  const rid = ++car.recId;
+  const mine = () => car && car.gen === g && car.recId === rid && !car.paused;
   car.rec = rec;
   rec.lang = 'es-ES';
   rec.continuous = true;
   rec.interimResults = true;
   rec.maxAlternatives = 5;
-  let handled = false;
+  let alive = false;
+  rec.onstart = () => { if (mine()) alive = true; };
+  rec.onaudiostart = () => { if (mine()) alive = true; };
   rec.onresult = (e) => {
-    if (handled || !car) return;
-    let txt = '';
-    for (let i = 0; i < e.results.length; i++) {
-      for (let j = 0; j < e.results[i].length; j++) txt += ' ' + e.results[i][j].transcript;
-    }
-    txt = txt.trim();
-    if (txt) carHeard('«' + txt.slice(-48) + '»');
-    const cmd = parseVoice(txt);
-    if (cmd) {
-      handled = true;
-      try { rec.abort(); } catch (err) {}
-      carCommand(cmd);
+    if (!mine()) return;
+    alive = true;
+    if (speechSynthesis.speaking) return; // nunca evaluar mientras habla la app
+    car.fails = 0;
+    // solo lo nuevo de esta escucha, cada alternativa por separado
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      for (let j = 0; j < r.length; j++) {
+        const t = (r[j].transcript || '').trim();
+        if (!t) continue;
+        if (j === 0) carHeard('«' + t.slice(-48) + '»');
+        const cmd = parseVoice(t, r.isFinal, car.q);
+        if (cmd) { carStopRec(); carCommand(cmd); return; }
+      }
     }
   };
   rec.onerror = (e) => {
-    if (handled || !car) return;
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
-      handled = true;
-      carToPodcast();
-    } else if (e.error === 'no-speech') {
-      carHeard('no te he oído, prueba otra vez…');
-    } else if (e.error === 'network') {
-      carHeard('sin conexión para el dictado…');
-    }
-    // onend relanza la escucha
+    if (!mine()) return;
+    if (e.error === 'not-allowed') { carStopRec(); carToPodcast(); return; }
+    if (e.error === 'no-speech') carHeard('no te he oído, prueba otra vez…');
+    else if (e.error === 'network') carHeard('sin conexión para el dictado…');
+    else if (e.error !== 'aborted') car.fails++; // audio-capture, service-not-allowed…: transitorio, reintentar
   };
   rec.onend = () => {
-    if (!car || handled || car.phase !== 'listening') return;
-    carTimer(() => { if (car && car.phase === 'listening') carListenNow(); }, 250);
+    if (!mine()) return;
+    car.rec = null;
+    carTimer(() => carListenNow(), car.fails ? 600 * car.fails : 250);
   };
-  try { rec.start(); } catch (e) { carToPodcast(); }
+  try { rec.start(); } catch (e) { car.fails++; carTimer(() => carListenNow(), 800); return; }
+  // vigilantes: micro que no arranca, o que se queda colgado sin avisar
+  carTimer(() => { if (mine() && !alive) { car.fails++; carListenNow(); } }, 3500);
+  carTimer(() => { if (mine()) carListenNow(); }, 15000);
 }
 
 function carToPodcast() {
   if (!car) return;
   toast('Micrófono no disponible: modo escucha');
+  carStep();
   car.podcast = true;
   const at = S.current[car.key];
   car.pIdx = at ? at.answers.length : 0;
@@ -639,10 +744,12 @@ function carCommand(cmd) {
   if (cmd.type === 'exit') { carExitSpoken(); return; }
   if (cmd.type === 'repeat') { carNext(); return; }
   if (cmd.type === 'review') {
+    carStep();
     const target = car.lastQid || (car.q && car.q.id);
     if (target && !S.review.includes(target)) { S.review.push(target); save(); }
+    car.phase = 'speaking';
     renderIfCar();
-    speak(S.settings.voice === 'en' ? 'Added to review' : 'Añadida a repaso', () => { if (car) carListen(); });
+    carTimer(() => speak(S.settings.voice === 'en' ? 'Added to review' : 'Añadida a repaso', () => carListen()), 150);
     return;
   }
   if (cmd.type === 'answer') carAnswer(cmd.val);
@@ -650,6 +757,7 @@ function carCommand(cmd) {
 
 function carAnswer(sel) {
   if (!car) return;
+  carStep();
   const at = S.current[car.key];
   const idx = at ? carIdx() : null;
   if (idx === null) { carFinish(); return; }
@@ -663,29 +771,28 @@ function carAnswer(sel) {
   car.lastQid = q.id;
   car.phase = ok ? 'ok' : 'ko';
   renderIfCar();
+  if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
   const lang = S.settings.voice;
   const valTxt = v => (lang === 'en' ? (v ? 'true' : 'false') : (v ? 'verdadero' : 'falso'));
   const fb = ok
     ? (lang === 'en' ? 'Correct' : 'Correcto')
     : (lang === 'en' ? `Wrong. It was ${valTxt(q.a)}` : `Incorrecto. Era ${valTxt(q.a)}`);
-  speak(fb, () => { if (car) carTimer(() => carNext(), 400); });
+  carTimer(() => speak(fb, () => carTimer(() => carNext(), 400)), 150);
 }
 
 function carExitSpoken() {
   const lang = S.settings.voice;
-  const key = car.key;
-  const at = S.current[key];
+  const at = S.current[car.key];
   let msg = lang === 'en' ? 'Okay, stopping.' : 'Vale, lo dejamos aquí.';
   if (at && at.answers.length) {
     const nOk = at.answers.filter(a => a.ok).length;
     msg += lang === 'en' ? ` ${nOk} of ${at.answers.length} correct so far.` : ` Llevas ${nOk} de ${at.answers.length} bien.`;
   }
-  if (car.rec) { try { car.rec.onend = null; car.rec.abort(); } catch (e) {} }
-  car.rec = null;
-  speak(msg, null);
-  carTimer(() => carExit(), 4000);
+  carStep();
   car.phase = 'bye';
   renderIfCar();
+  speak(msg, null);
+  carTimer(() => carExit(), 4000);
 }
 
 function carFinish() {
@@ -715,8 +822,7 @@ function carExit() {
 
 function carCleanup() {
   if (!car) return;
-  car.timers.forEach(clearTimeout);
-  if (car.rec) { try { car.rec.onend = null; car.rec.onresult = null; car.rec.abort(); } catch (e) {} }
+  carStep();
   try { speechSynthesis.cancel(); } catch (e) {}
   if (car.wake) { try { car.wake.release(); } catch (e) {} }
   car = null;
@@ -733,6 +839,7 @@ const CAR_STATUS = {
   ok: { cls: 'ok', label: 'Correcto', ico: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>' },
   ko: { cls: 'ko', label: 'Incorrecto', ico: '<svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>' },
   bye: { cls: 'speaking', label: 'Hasta luego', ico: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4Z"/><path d="M16 9a4.2 4.2 0 0 1 0 6"/></svg>' },
+  paused: { cls: 'paused', label: 'En pausa', ico: '<svg viewBox="0 0 24 24"><path d="M9 6.5v11M15 6.5v11"/></svg>' },
 };
 
 function renderCar() {
@@ -767,14 +874,22 @@ function renderCar() {
       <button data-voice="en" class="${lang === 'en' ? 'sel' : ''}">Voice: English</button>
     </div>
 
-    ${car.podcast ? '' : `<p class="car-hint">Di <b>«verdadero»</b> o <b>«falso»</b> · «repaso» marca la última respondida · «repetir» · «salir»</p>
+    ${car.phase === 'paused'
+      ? `<p class="car-hint">${car.stuck
+          ? 'El micrófono se ha bloqueado. Toca <b>Continuar</b> para reabrirlo.'
+          : 'Pausado al salir de la app. Se reanuda solo al volver; si no suena, toca <b>Continuar</b>.'}</p>
+         <button class="btn btn-primary car-resume" data-act="resume">Continuar</button>`
+      : (car.podcast ? '' : `<p class="car-hint">Di <b>«verdadero»</b> o <b>«falso»</b> · «repaso» marca la última respondida · «repetir» · «salir»</p>
     <div class="row car-btns">
       <button class="btn car-true" data-val="true">TRUE</button>
       <button class="btn car-false" data-val="false">FALSE</button>
-    </div>`}
+    </div>`)}
     <button class="btn btn-ghost" data-act="exit">Salir del modo coche</button>
   </div>`;
   main.appendChild(h(html));
+
+  const resumeBtn = main.querySelector('[data-act="resume"]');
+  if (resumeBtn) resumeBtn.addEventListener('click', () => carResume());
 
   main.querySelectorAll('[data-voice]').forEach(el => {
     el.addEventListener('click', () => {
@@ -785,10 +900,8 @@ function renderCar() {
   });
   main.querySelectorAll('.car-btns .btn').forEach(el => {
     el.addEventListener('click', () => {
-      if (!car || (car.phase !== 'listening' && car.phase !== 'speaking')) return;
-      if (car.rec) { try { car.rec.onend = null; car.rec.abort(); } catch (e) {} }
-      speechSynthesis.cancel();
-      carAnswer(el.dataset.val === 'true');
+      if (!car || car.paused || (car.phase !== 'listening' && car.phase !== 'speaking')) return;
+      carAnswer(el.dataset.val === 'true'); // carAnswer ya corta micro y voz del paso actual
     });
   });
   main.querySelector('[data-act="exit"]').addEventListener('click', () => carExit());
@@ -1083,21 +1196,36 @@ async function requestReaderWake() {
     if (reader && navigator.wakeLock) reader.wake = await navigator.wakeLock.request('screen');
   } catch (e) {}
 }
+/* Al salir de la app iOS corta la voz a media frase: congelar la lectura (gen) y, al volver,
+   retomar la frase en curso en vez de dejar la cadena rota o dos voces solapadas */
 document.addEventListener('visibilitychange', () => {
-  if (reader && reader.playing && document.visibilityState === 'visible') requestReaderWake();
+  if (!reader || !reader.playing) return;
+  if (document.visibilityState === 'hidden') {
+    reader.gen = (reader.gen || 0) + 1;
+    clearTimeout(reader.gapTimer);
+    try { speechSynthesis.cancel(); } catch (e) {}
+    reader.suspended = true;
+  } else if (reader.suspended) {
+    reader.suspended = false;
+    requestReaderWake();
+    const g = reader.gen;
+    setTimeout(() => { if (reader && reader.playing && reader.gen === g) readerSpeakChunk(); }, 1000);
+  }
 });
 
 function readerSpeakChunk() {
-  if (!reader || !reader.playing) return;
+  if (!reader || !reader.playing || reader.suspended) return;
   const b = BOOK_BY[reader.book];
   if (reader.ci >= reader.flat.length) { readerSectionDone(); return; }
   const item = reader.flat[reader.ci];
+  const g = reader.gen = (reader.gen || 0) + 1;
+  const mine = () => reader && reader.playing && !reader.suspended && reader.gen === g;
   const u = ttsSpeak(item.text, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.0, () => {
-    if (!reader || !reader.playing) return;
+    if (!mine()) return;
     reader.ci++;
     readerHighlight();
     // respirar entre frases y algo más entre párrafos
-    reader.gapTimer = setTimeout(() => { if (reader && reader.playing) readerSpeakChunk(); }, item.gap);
+    reader.gapTimer = setTimeout(() => { if (mine()) readerSpeakChunk(); }, item.gap);
   });
   if (reader.first) { reader.first = false; ttsWatchdog(u); }
   readerHighlight();
@@ -1110,11 +1238,13 @@ function readerSectionDone() {
   if (next < b.sections.length) {
     const sec = b.sections[next];
     const title = (sec.n ? sec.n + '. ' : '') + nice(sec.t);
+    const g = reader.gen = (reader.gen || 0) + 1;
+    const mine = () => reader && reader.playing && !reader.suspended && reader.gen === g;
     setTimeout(() => {
-      if (!reader || !reader.playing) return;
+      if (!mine()) return;
       ttsSpeak(title, b.lang === 'en' ? 'en-GB' : 'es-ES', 1.0, () => {
-        if (reader && reader.playing) setTimeout(() => {
-          if (reader && reader.playing) go('reader', { book: reader.book, si: next, autoplay: true });
+        if (mine()) setTimeout(() => {
+          if (mine()) go('reader', { book: reader.book, si: next, autoplay: true });
         }, 500);
       });
     }, 1100);

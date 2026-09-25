@@ -466,6 +466,9 @@ textarea.backup {
   background: #e5f1ff; color: var(--blue);
   animation: car-pulse 1.6s ease-in-out infinite;
 }
+.car-status.paused .car-circle { background: #fff4e0; color: #b26a00; }
+.car-status.paused .car-label { color: #b26a00; }
+.car-resume { padding: 20px; font-size: 1.1rem; margin-bottom: 10px; }
 .car-status.ok .car-circle { background: var(--green-bg); color: var(--green-dark); }
 .car-status.ko .car-circle { background: var(--red-bg); color: var(--red-dark); }
 .car-label { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.01em; }
