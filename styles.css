@@ -441,7 +441,7 @@ textarea.backup {
 .reader-controls [data-act="play"] { flex: 1; }
 .reader-nav { width: 64px; flex-shrink: 0; font-size: 1.4rem; padding: 12px 0; background: var(--card); }
 
-/* ---------- modo coche ---------- */
+/* ---------- modo voz ---------- */
 .inline-ico {
   width: 19px; height: 19px;
   vertical-align: -4px; margin-right: 6px;

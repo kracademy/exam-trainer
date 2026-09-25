@@ -19,7 +19,7 @@ const BANK = {
 
 function defaultState() {
   return {
-    settings: { lang: 'both', voice: 'es', voiceSel: { es: '', en: '' } }, // lang: both|en|es · voice (modo coche): en|es · voiceSel: voz TTS elegida
+    settings: { lang: 'both', voice: 'es', voiceSel: { es: '', en: '' } }, // lang: both|en|es · voice (modo voz): en|es · voiceSel: voz TTS elegida
     review: [],                 // ids marcadas para repaso
     attempts: [],               // historial de intentos terminados
     current: {},                // intento en curso por clave (kata/kumite/review)
@@ -219,7 +219,7 @@ function renderStart() {
         <span style="color:var(--red-dark);font-weight:700">${cur.answers.filter(a => !a.ok).length} mal</span>
       </div>
       <button class="btn btn-primary" data-act="resume">Continuar intento</button>
-      <button class="btn" data-act="resume-car">${CAR_ICON} Continuar en modo coche</button>
+      <button class="btn" data-act="resume-car">${CAR_ICON} Continuar en modo voz</button>
       <button class="btn btn-ghost" data-act="discard">Descartar y empezar de nuevo</button>
     </div>`;
   }
@@ -232,7 +232,7 @@ function renderStart() {
     </div>
     <div style="flex:1"></div>
     <button class="btn btn-primary" data-act="begin">Comenzar</button>
-    <button class="btn" data-act="begin-car">${CAR_ICON} Modo coche (voz)</button>
+    <button class="btn" data-act="begin-car">${CAR_ICON} Modo voz</button>
     <button class="btn btn-ghost" data-act="back">‹ Inicio</button>
   </div>`;
 
@@ -387,9 +387,9 @@ function finishAttempt(key) {
   go('result', { rec });
 }
 
-/* ---------- modo coche (voz) ---------- */
+/* ---------- modo voz (antes "modo coche"; el código interno sigue llamándose car) ---------- */
 
-const CAR_ICON = '<svg class="inline-ico" viewBox="0 0 24 24"><path d="M5 12 6.5 7.2A1.8 1.8 0 0 1 8.2 6h7.6a1.8 1.8 0 0 1 1.7 1.2L19 12"/><path d="M4.5 12h15a1.5 1.5 0 0 1 1.5 1.5V17h-2.5M3 17V13.5A1.5 1.5 0 0 1 4.5 12M8.5 17h7"/><circle cx="6.7" cy="17" r="1.8"/><circle cx="17.3" cy="17" r="1.8"/></svg>';
+const CAR_ICON = '<svg class="inline-ico" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3"/></svg>';
 
 const SRClass = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -467,7 +467,7 @@ function ttsWatchdog(u) {
 
 let car = null; // sesión de voz activa
 
-/* Estabilidad del modo coche
+/* Estabilidad del modo voz
    - Cada paso (pregunta, respuesta, pausa…) sube car.gen: cualquier aviso tardío de un paso
      anterior (frase cortada, micro viejo, temporizador) se ignora en vez de hacer avanzar el flujo.
    - Al salir de la app (llamada, crono…) se para todo; al volver se relee la pregunta desde cero.
@@ -884,7 +884,7 @@ function renderCar() {
       <button class="btn car-true" data-val="true">TRUE</button>
       <button class="btn car-false" data-val="false">FALSE</button>
     </div>`)}
-    <button class="btn btn-ghost" data-act="exit">Salir del modo coche</button>
+    <button class="btn btn-ghost" data-act="exit">Salir del modo voz</button>
   </div>`;
   main.appendChild(h(html));
 
@@ -995,7 +995,7 @@ function renderReview() {
   if (ids.length) {
     html += `<div class="row review-actions">
       <button class="btn btn-primary" data-act="practice">Practicar (${ids.length})</button>
-      <button class="btn" data-act="practice-car">${CAR_ICON} Coche</button>
+      <button class="btn" data-act="practice-car">${CAR_ICON} Voz</button>
     </div>`;
   }
 
@@ -1003,7 +1003,7 @@ function renderReview() {
     html += `<div class="card">
       <div style="font-weight:700;margin-bottom:10px">Práctica de repaso en curso · ${cur.answers.length}/${cur.qids.length}</div>
       <button class="btn btn-primary" data-act="resume-review">Continuar</button>
-      <button class="btn" data-act="resume-review-car">${CAR_ICON} Continuar en modo coche</button>
+      <button class="btn" data-act="resume-review-car">${CAR_ICON} Continuar en modo voz</button>
     </div>`;
   }
 
@@ -1410,12 +1410,12 @@ function renderSettings() {
       <button data-lang="es" class="${lang === 'es' ? 'sel' : ''}">Español</button>
     </div>
 
-    <div class="set-label">VOZ DEL MODO COCHE</div>
+    <div class="set-label">IDIOMA DEL MODO VOZ</div>
     <div class="seg">
       <button data-voice="es" class="${S.settings.voice === 'es' ? 'sel' : ''}">Español</button>
       <button data-voice="en" class="${S.settings.voice === 'en' ? 'sel' : ''}">English</button>
     </div>
-    <p class="note">El modo coche lee las preguntas en voz alta y escucha tu respuesta («verdadero» / «falso»).
+    <p class="note">El modo voz lee las preguntas en voz alta y escucha tu respuesta («verdadero» / «falso»).
     Leer funciona sin conexión; escuchar necesita internet (datos móviles).</p>
 
     <div class="set-label">QUÉ VOZ USAR</div>
